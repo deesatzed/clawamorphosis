@@ -1493,6 +1493,154 @@ async def _add_goal_async(
 
 
 @app.command()
+def mine(
+    directory: str = typer.Argument(..., help="Path to directory containing repos to mine"),
+    target: str = typer.Option(".", "--target", "-t", help="Target project path (defaults to current directory)"),
+    max_repos: int = typer.Option(10, "--max-repos", help="Maximum number of repos to mine"),
+    min_relevance: float = typer.Option(0.6, "--min-relevance", help="Minimum relevance score for task generation (0.4-1.0)"),
+    tasks: bool = typer.Option(True, "--tasks/--no-tasks", help="Generate enhancement tasks from findings"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Mine local repositories for patterns, features, and ideas.
+
+    Scans a directory for git repos, analyzes each via LLM to extract
+    transferable patterns, stores findings in semantic memory, and
+    optionally generates enhancement tasks for the target project.
+    """
+    _setup_logging(verbose)
+
+    dir_path = Path(directory).resolve()
+    if not dir_path.exists():
+        console.print(f"[red]Directory does not exist: {dir_path}[/red]")
+        raise typer.Exit(1)
+    if not dir_path.is_dir():
+        console.print(f"[red]Path is not a directory: {dir_path}[/red]")
+        raise typer.Exit(1)
+
+    if max_repos < 1:
+        console.print("[red]--max-repos must be at least 1[/red]")
+        raise typer.Exit(1)
+
+    if not (0.4 <= min_relevance <= 1.0):
+        console.print("[red]--min-relevance must be between 0.4 and 1.0[/red]")
+        raise typer.Exit(1)
+
+    asyncio.run(_mine_async(
+        dir_path, target, max_repos, min_relevance, tasks, config,
+    ))
+
+
+async def _mine_async(
+    dir_path: Path,
+    target: str,
+    max_repos: int,
+    min_relevance: float,
+    generate_tasks: bool,
+    config_path: Optional[str],
+) -> None:
+    from claw.core.factory import ClawFactory
+    from claw.core.models import Project
+
+    config_p = Path(config_path) if config_path else None
+    target_path = Path(target).resolve()
+    ctx = await ClawFactory.create(config_path=config_p, workspace_dir=target_path)
+
+    try:
+        # Get or create target project
+        project_name = target_path.name
+        project = await ctx.repository.get_project_by_name(project_name)
+        if project is None:
+            project = Project(name=project_name, repo_path=str(target_path))
+            project = await ctx.repository.create_project(project)
+
+        console.print(f"\n[bold]CLAW Repo Mining[/bold]")
+        console.print(f"  Directory: {dir_path}")
+        console.print(f"  Target: {project.name} ({target_path})")
+        console.print(f"  Max repos: {max_repos}")
+        console.print(f"  Min relevance for tasks: {min_relevance}")
+        console.print(f"  Generate tasks: {generate_tasks}")
+        console.print(f"  Database: {ctx.config.database.db_path}")
+        console.print()
+
+        # Progress callback
+        def on_repo_complete(repo_name: str, result: Any) -> None:
+            n_findings = len(result.findings) if result.findings else 0
+            if result.error:
+                console.print(f"  [red]x {repo_name}: {result.error}[/red]")
+            else:
+                console.print(
+                    f"  [green]+ {repo_name}[/green]: "
+                    f"{n_findings} findings, {result.files_analyzed} files, "
+                    f"{result.tokens_used} tokens, {result.duration_seconds:.1f}s"
+                )
+
+        console.print("[cyan]Mining repositories...[/cyan]")
+        report = await ctx.miner.mine_directory(
+            base_path=dir_path,
+            target_project_id=project.id,
+            max_repos=max_repos,
+            min_relevance=min_relevance,
+            generate_tasks=generate_tasks,
+            on_repo_complete=on_repo_complete,
+        )
+
+        # Display results table
+        console.print()
+        results_table = Table(title="Mining Results")
+        results_table.add_column("Repo", style="cyan", max_width=25)
+        results_table.add_column("Files", justify="right", style="dim", width=6)
+        results_table.add_column("Findings", justify="right", style="green", width=9)
+        results_table.add_column("Tokens", justify="right", style="yellow", width=8)
+        results_table.add_column("Time", justify="right", style="dim", width=8)
+        results_table.add_column("Status", max_width=20)
+
+        for result in report.repo_results:
+            status = "[green]OK[/green]" if not result.error else f"[red]{result.error[:18]}[/red]"
+            results_table.add_row(
+                result.repo_name,
+                str(result.files_analyzed),
+                str(len(result.findings)),
+                str(result.tokens_used),
+                f"{result.duration_seconds:.1f}s",
+                status,
+            )
+
+        console.print(results_table)
+
+        # Summary
+        console.print(f"\n[bold]Summary[/bold]")
+        console.print(f"  Repos scanned: {report.repos_scanned}")
+        console.print(f"  Total findings: {report.total_findings}")
+        console.print(f"  Tasks generated: {report.tasks_generated}")
+        console.print(f"  Total tokens: {report.total_tokens}")
+        console.print(f"  Total time: {report.total_duration_seconds:.1f}s")
+
+        if report.tasks:
+            console.print(f"\n[bold]Generated Tasks[/bold]")
+            task_table = Table()
+            task_table.add_column("Title", style="cyan", max_width=60)
+            task_table.add_column("Priority", justify="right", style="yellow", width=8)
+            task_table.add_column("Type", style="dim", width=16)
+            task_table.add_column("Agent", style="green", width=8)
+
+            for task in report.tasks:
+                task_table.add_row(
+                    task.title[:58],
+                    str(task.priority),
+                    task.task_type or "-",
+                    task.recommended_agent or "-",
+                )
+
+            console.print(task_table)
+
+        console.print(f"\n[dim]Use 'claw results' to view tasks, 'claw enhance .' to work on them.[/dim]")
+
+    finally:
+        await ctx.close()
+
+
+@app.command()
 def setup(
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
 ) -> None:

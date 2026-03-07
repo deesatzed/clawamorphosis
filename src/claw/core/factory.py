@@ -44,6 +44,7 @@ class ClawContext:
     semantic_memory: Any = None
     prompt_evolver: Any = None
     pattern_learner: Any = None
+    miner: Any = None
 
     async def close(self) -> None:
         """Cleanly shut down all components."""
@@ -186,6 +187,15 @@ class ClawFactory:
             semantic_memory=semantic_memory,
         )
 
+        # Repo Miner
+        from claw.miner import RepoMiner
+        miner = RepoMiner(
+            repository=repository,
+            llm_client=llm_client,
+            semantic_memory=semantic_memory,
+            config=config,
+        )
+
         ctx = ClawContext(
             config=config,
             engine=engine,
@@ -204,6 +214,7 @@ class ClawFactory:
             semantic_memory=semantic_memory,
             prompt_evolver=prompt_evolver,
             pattern_learner=pattern_learner,
+            miner=miner,
         )
 
         agent_names = list(agents.keys()) if agents else ["none"]
