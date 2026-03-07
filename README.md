@@ -2,7 +2,7 @@
 
 **The AI coding agent that proved it works — by rewriting itself.**
 
-CLAW is an 18,000-line Python system. It pointed four AI agents at its own source code, identified 47 improvements, executed them, verified every change against 1,123 tests, and recorded what worked so the next run would be smarter. No human touched the code.
+CLAW is an ~18,000-line Python system. It pointed four AI agents at its own source code, identified 47 improvements, executed them, verified every change against 1,153 tests, and recorded what worked so the next run would be smarter. No human touched the code.
 
 That's the pitch. Here's why it matters.
 
@@ -88,11 +88,15 @@ One stuck task can burn $50 of API credits in a retry loop. CLAW prevents this w
 
 When any cap is hit, the task **pauses** (not fails) and the system either routes to a cheaper agent or waits for the next budget window.
 
+### 6. OpenRouter Multi-Model Access
+
+All four agents support **OpenRouter mode** — a unified gateway for cost-controlled multi-model comparison. Instead of managing four separate API keys and SDKs, any agent can be routed through OpenRouter with a single API key. Round-robin model testing has verified all four model slots working through OpenRouter (gemini-flash-lite, qwen, minimax, glm-5 among the tested configurations). This means you can swap underlying models weekly without touching agent code — the routing layer handles it.
+
 ---
 
 ## The Showpiece: CLAW Rewrites Itself
 
-The definitive test: point CLAW at its own 18,000-line codebase and say "make it better."
+The definitive test: point CLAW at its own ~18,000-line codebase and say "make it better."
 
 ```bash
 claw evaluate .          # CLAW analyzes itself
@@ -105,15 +109,15 @@ This is not a demo on a TODO app. CLAW's own codebase is:
 - 4 agent integrations with health monitoring and circuit breakers
 - 7 memory systems with embedding-based retrieval
 - A prompt evolution engine with Bayesian A/B testing
-- 1,123 passing tests
+- 1,153 passing tests
 
 When CLAW runs against itself:
 1. The **18-prompt evaluation battery** analyzes its own architecture, detects drift, verifies claims, scans for debt
-2. The **Planner** converts findings into prioritized tasks with dependency ordering
+2. The **MesoClaw** planner converts findings into prioritized tasks with dependency ordering
 3. The **Dispatcher** routes each task to the best-fit agent using learned scores
 4. Each agent reads CLAW's own source code and produces changes
 5. The **Verifier** runs CLAW's own `pytest` suite against every change
-6. The **Learner** records what worked so the next self-improvement cycle is smarter
+6. The **NanoClaw** learner records what worked, updates agent scores and routing, so the next self-improvement cycle is smarter
 
 The recursion is real. CLAW's drift detector compares its own documentation against its own implementation. CLAW's claim validator rejects assertions in its own README that aren't backed by evidence.
 
@@ -123,13 +127,14 @@ The recursion is real. CLAW's drift detector compares its own documentation agai
 
 | Capability | CLAW | CrewAI | LangGraph | AutoGen | Single-Agent Tools |
 |-----------|------|--------|-----------|---------|-------------------|
-| Multi-model orchestration | 4 agents (Claude, Codex, Gemini, Grok) | Role-based agents, single LLM | Graph nodes, any LLM | Multi-agent chat | 1 agent |
+| Multi-model orchestration | 4 agents via OpenRouter + native SDKs | Role-based agents, single LLM | Graph nodes, any LLM | Multi-agent chat | 1 agent |
 | Learned routing | Bayesian + Thompson sampling | No | No | No | N/A |
 | Independent verification | 7-check gate | No built-in | No built-in | No built-in | Trust the output |
 | Cross-project memory | 7 typed stores + vector search | Short-term only | Checkpointers | No | Per-session |
 | Prompt evolution | A/B tested mutations | No | No | No | No |
 | Budget enforcement | 4-level hard caps | No | No | No | Varies |
-| Self-improvement test | Rewrites its own 18K-line codebase | N/A | N/A | N/A | N/A |
+| Fleet orchestration | MacroClaw scans/ranks/schedules repo fleets | N/A | N/A | N/A | N/A |
+| Self-improvement test | Rewrites its own ~18K-line codebase | N/A | N/A | N/A | N/A |
 
 ---
 
@@ -146,6 +151,9 @@ claw setup
 # Evaluate any repository
 claw evaluate /path/to/your/repo
 
+# Evaluate with a specific battery mode (full, quick, structural, auto)
+claw evaluate /path/to/your/repo --battery-mode quick
+
 # Add specific goals
 claw add-goal /path/to/repo -t "Add unit tests for auth module" \
   -d "Write pytest tests for login, logout, token refresh" \
@@ -154,20 +162,24 @@ claw add-goal /path/to/repo -t "Add unit tests for auth module" \
 # Run the full pipeline
 claw enhance /path/to/repo --mode attended
 
+# Fleet processing — enhance multiple repos autonomously
+claw fleet-enhance /path/to/repos/ --mode autonomous
+
 # View results
 claw results
 ```
 
-Only Claude (Anthropic) is required. Codex, Gemini, and Grok are optional — enable any combination via `claw setup`.
+Only Claude (Anthropic) is required. Codex, Gemini, and Grok are optional — enable any combination via `claw setup`. All agents can also run through OpenRouter for unified multi-model access with a single API key.
 
 ## Commands
 
 | Command | What It Does |
 |---------|-------------|
 | `claw setup` | Interactive configuration: API keys, models, budgets, modes per agent |
-| `claw evaluate <repo>` | 18-prompt analysis battery across 6 phases |
+| `claw evaluate <repo>` | 18-prompt analysis battery across 6 phases (supports full/quick/structural/auto modes) |
 | `claw enhance <repo>` | Full pipeline: evaluate, plan, dispatch, verify, learn |
 | `claw add-goal <repo>` | Add a manual task/goal for agents to work on |
+| `claw fleet-enhance <dir>` | Fleet orchestration: scan, rank, and enhance multiple repos |
 | `claw results` | View past task outcomes with agent, cost, and verification status |
 | `claw status` | System status: agent health, task summary, budget usage |
 
@@ -176,6 +188,13 @@ Only Claude (Anthropic) is required. Codex, Gemini, and Grok are optional — en
 - **`--mode attended`** — you approve each change before it's applied
 - **`--mode supervised`** — autonomous with periodic pause and summary
 - **`--mode autonomous`** — fleet processing, budget caps are the only guardrail
+
+### Evaluation Battery Modes
+
+- **`full`** — all 18 prompts across 6 phases (deepest analysis)
+- **`quick`** — core prompts only for fast feedback
+- **`structural`** — architecture and code structure focused
+- **`auto`** — CLAW selects the appropriate battery based on project characteristics
 
 ## Architecture
 
@@ -199,7 +218,7 @@ Only Claude (Anthropic) is required. Codex, Gemini, and Grok are optional — en
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-This cycle runs at four nested scales:
+This cycle runs at four nested scales, with MesoClaw and NanoClaw fully wired into the execution loop:
 
 | Scale | Scope | Purpose |
 |-------|-------|---------|
@@ -217,14 +236,14 @@ All configuration in `claw.toml`:
 ```toml
 [agents.claude]
 enabled = true
-mode = "cli"
+mode = "cli"                         # "cli", "api", or "openrouter"
 api_key_env = "ANTHROPIC_API_KEY"
 max_budget_usd = 5.0
 
 [agents.codex]
 enabled = false
-mode = "cli"
-api_key_env = "OPENAI_API_KEY"
+mode = "openrouter"                  # all agents support OpenRouter mode
+api_key_env = "OPENROUTER_API_KEY"
 
 [agents.gemini]
 enabled = false
@@ -237,7 +256,7 @@ mode = "api"
 api_key_env = "XAI_API_KEY"
 ```
 
-Model versions are **never hardcoded** — they change weekly. Set them via `claw setup` or directly in `claw.toml`.
+Model versions are **never hardcoded** — they change weekly. Set them via `claw setup` or directly in `claw.toml`. All agents support OpenRouter mode for unified multi-model access.
 
 ## Tech Stack
 
@@ -248,6 +267,7 @@ Model versions are **never hardcoded** — they change weekly. Set them via `cla
 - **Typer + Rich** — CLI with live progress, tables, colored output
 - **Pydantic v2** — data contracts and config validation
 - **Agent SDKs** — anthropic, openai, google-genai, xai (OpenAI-compatible)
+- **OpenRouter** — unified multi-model gateway for cost-controlled agent comparison
 
 ## Origin
 
@@ -257,13 +277,13 @@ The core subsystems — the verification gate, the memory stores, the health mon
 
 42 battle-tested components were transferred and adapted: sync to async, PostgreSQL to SQLite, single-agent to multi-agent. 19 new files were written for what ralfed never had — multi-model fleet orchestration, Bayesian routing across 4 agents, prompt evolution with A/B testing, cross-project semantic memory, and the NanoClaw recursive architecture where the same 6-step cycle operates at four nested scales.
 
-The NanoClaw architecture concept — fractal cycles from fleet level down to self-improvement — came from the `clawpre.md` blueprint authored by Wayne with Claude Opus 4.6 as technical scribe. The implementation sprint turned that blueprint into 17,935 lines of working Python.
+The NanoClaw architecture concept — fractal cycles from fleet level down to self-improvement — came from the `clawpre.md` blueprint authored by Wayne with Claude Opus 4.6 as technical scribe. The implementation sprint turned that blueprint into ~18,000 lines of working Python.
 
 CLAW stands on the shoulders of a system that already worked. Then it added the parts that make multiple agents work together.
 
 ## Project
 
-58 source files. 17,935 lines. 1,123 tests. 18 evaluation prompts. 7 memory systems. 4 agent integrations. 30+ database tables. One `pip install`.
+58 source files. ~18,000 lines. 1,153 tests. 18 evaluation prompts. 7 memory systems. 4 agent integrations (all OpenRouter-capable). 30+ database tables. 7 CLI commands. One `pip install`.
 
 ## License
 

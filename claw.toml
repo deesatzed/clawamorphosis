@@ -87,29 +87,36 @@ max_cost_per_day_usd = 50.0
 
 [agents.claude]
 enabled = true
-mode = "cli"
-api_key_env = "ANTHROPIC_API_KEY"
+mode = "openrouter"
+api_key_env = "OPENROUTER_API_KEY"
+model = "google/gemini-3.1-flash-lite-preview"
 max_concurrent = 2
 timeout = 600
 max_budget_usd = 5.0
 
 [agents.codex]
-enabled = false
-mode = "cli"
-api_key_env = "OPENAI_API_KEY"
+enabled = true
+mode = "openrouter"
+api_key_env = "OPENROUTER_API_KEY"
+model = "qwen/qwen3.5-35b-a3b"
 max_concurrent = 4
 timeout = 300
+max_budget_usd = 1.0
 
 [agents.gemini]
-enabled = false
-mode = "api"
-api_key_env = "GOOGLE_API_KEY"
+enabled = true
+mode = "openrouter"
+api_key_env = "OPENROUTER_API_KEY"
+model = "minimax/minimax-m2.5"
 max_concurrent = 2
 timeout = 600
+max_budget_usd = 1.0
 
 [agents.grok]
-enabled = false
-mode = "api"
-api_key_env = "XAI_API_KEY"
+enabled = true
+mode = "openrouter"
+api_key_env = "OPENROUTER_API_KEY"
+model = "z-ai/glm-5"
 max_concurrent = 2
 timeout = 300
+max_budget_usd = 1.0

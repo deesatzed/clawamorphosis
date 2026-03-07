@@ -23,7 +23,7 @@ CLAW (Codebase Learning & Autonomous Workforce) is a Python system that coordina
 Evaluate → Plan → Dispatch → Act → Verify → Learn
 ```
 
-The "Evaluate" step runs an 18-prompt analysis battery against the target repository — architecture review, drift detection, claim verification, debt tracking, security scanning. This produces a prioritized list of concrete tasks.
+The "Evaluate" step runs an 18-prompt analysis battery against the target repository — architecture review, drift detection, claim verification, debt tracking, security scanning. The battery supports multiple modes (full, quick, structural, auto) so you can tune depth vs. speed depending on the context.
 
 The "Dispatch" step routes each task to the best-fit agent using Bayesian scoring. Claude gets the analysis work. Codex gets bulk refactoring. Gemini gets full-repo comprehension (1M context). Grok gets quick fixes. But these aren't hardcoded — the system starts with priors and updates them based on actual outcomes.
 
@@ -36,6 +36,8 @@ The "Learn" step updates agent scores, stores successful patterns in semantic me
 The core insight is fractal: the same 6-step cycle operates at four scales.
 
 **MacroClaw** (fleet level) scans hundreds of repositories, ranks them by enhancement potential, and allocates budgets. **MesoClaw** (project level) runs the evaluation battery against one repo and produces a plan. **MicroClaw** (task level) takes one task, routes it to an agent, and monitors execution. **NanoClaw** (self-improvement) updates scores and routing after every task.
+
+MesoClaw and NanoClaw are fully wired into the execution cycle — not just architectural concepts, but active participants in every enhancement run. The fleet-level MacroClaw orchestration is available via `claw fleet-enhance`, which scans a directory of repositories, ranks them, and processes them autonomously.
 
 Learning propagates upward. A task-level failure informs project-level routing, which informs fleet-level scheduling. The system gets smarter at every scale with every execution.
 
@@ -64,20 +66,26 @@ Every agent receives instructions through prompt templates. The prompt evolution
 
 This means the instructions agents receive get better over time — without any manual tuning. The system discovers what phrasing works best for each agent on each task type.
 
+## OpenRouter: Unified Multi-Model Access
+
+A key operational decision: all four agents now support **OpenRouter mode**. Instead of managing four separate API keys and four different SDKs, any agent can route through OpenRouter with a single API key. This enables cost-controlled multi-model comparison — you can test whether a cheaper model handles certain task types just as well as a premium one.
+
+Round-robin model testing confirmed all four agent slots working through OpenRouter, with models including gemini-flash-lite, qwen, minimax, and glm-5. The practical benefit: you can swap underlying models weekly (as new ones release) without touching agent code. The Bayesian routing layer measures outcomes regardless of which model is behind each agent.
+
 ## The Showpiece: CLAW Enhances Itself
 
 The most honest test of an autonomous coding system is self-reference: can it improve its own code?
 
-CLAW is not a toy. It's 18,000 lines of Python across 58 files — async throughout, SQLite with vector search, four agent integrations, seven memory systems, an evolution engine, budget enforcement, graceful degradation, and an 18-prompt evaluation battery. It has 1,123 passing tests.
+CLAW is not a toy. It's ~18,000 lines of Python across 58 files — async throughout, SQLite with vector search, four agent integrations (all OpenRouter-capable), seven memory systems, an evolution engine, budget enforcement, graceful degradation, and an 18-prompt evaluation battery. It has 1,153 passing tests.
 
 When we run `claw enhance . --mode attended`, CLAW:
 
-1. **Evaluates itself** using the 18-prompt battery — deepdive analysis, drift detection, claim verification, technical debt tracking, security scanning, documentation audit
-2. **Plans improvements** — the Planner converts evaluation findings into prioritized tasks with dependency ordering (security before features, infrastructure before implementation)
+1. **Evaluates itself** using the 18-prompt battery — deepdive analysis, drift detection, claim verification, technical debt tracking, security scanning
+2. **Plans improvements** — the MesoClaw planner converts evaluation findings into prioritized tasks with dependency ordering (security before features, infrastructure before implementation)
 3. **Routes each task** to the best-fit agent — Claude for the analysis-heavy work, with Bayesian scoring updating after each outcome
 4. **Executes** — the agent reads CLAW's own source code and produces changes
 5. **Verifies** — the 7-check gate runs against CLAW's own test suite, rejecting placeholder code, scanning for drift, validating claims
-6. **Learns** — successful patterns are stored in semantic memory; failed approaches are recorded in the error KB
+6. **Learns** — the NanoClaw loop records what worked in semantic memory, updates agent scores and routing, and stores failed approaches in the error KB
 
 The recursion is real. CLAW's Verifier runs CLAW's own `pytest` suite. CLAW's drift detector compares its own documentation against its own implementation. CLAW's claim-gate validates assertions in its own README.
 
@@ -93,29 +101,35 @@ The recursion is real. CLAW's Verifier runs CLAW's own `pytest` suite. CLAW's dr
 
 **Self-improvement is not magic — it's bookkeeping.** Prompt evolution, routing optimization, and pattern learning are all just careful tracking of what worked and what didn't, combined with statistical methods (Thompson sampling, Bayesian Beta distributions, fitness-weighted retrieval) to make better decisions next time.
 
+**OpenRouter changes the economics.** Being able to swap models per agent without code changes means you can run cost experiments. Does a $0.10/M-token model handle boilerplate refactoring as well as a $15/M-token model? The Bayesian routing will tell you, with data.
+
 ## Technical Details
 
 - **Language:** Python 3.12, asyncio throughout
 - **Database:** SQLite with WAL mode, sqlite-vec for vector search, FTS5 for full-text
-- **Agents:** Claude Code (anthropic SDK), Codex (openai SDK), Gemini (google-genai), Grok (xAI OpenAI-compatible)
+- **Agents:** Claude Code, Codex, Gemini, Grok — all supporting native SDK and OpenRouter modes
 - **Memory:** 384-dimensional embeddings via sentence-transformers, hybrid vector + text retrieval with MMR
 - **Budget:** 4-level USD-denominated caps with auto-pause and fallback routing
 - **Evolution:** Bayesian A/B testing for prompt variants, Thompson sampling for routing
+- **Fleet:** MacroClaw orchestration via `claw fleet-enhance` for multi-repo processing
+- **Evaluation:** 18-prompt battery with selectable modes (full/quick/structural/auto)
 
 ## Try It
 
 ```bash
-git clone https://github.com/yourusername/multiclaw.git
-cd multiclaw
+git clone https://github.com/deesatzed/clawamorphosis.git
+cd clawamorphosis
 pip install -e ".[dev]"
-claw setup                    # Configure API keys and models
-claw evaluate .               # CLAW analyzes itself
-claw enhance . --mode attended  # CLAW improves itself
-claw results                  # See what happened
+claw setup                            # Configure API keys and models
+claw evaluate .                       # CLAW analyzes itself
+claw evaluate . --battery-mode quick  # Fast evaluation with core prompts only
+claw enhance . --mode attended        # CLAW improves itself
+claw fleet-enhance /path/to/repos/    # Process a fleet of repositories
+claw results                          # See what happened
 ```
 
 The code is MIT licensed. The prompts are included. The self-referential test is the default demo.
 
 ---
 
-*CLAW is 17,935 lines of production Python, 1,123 tests, 18 evaluation prompts, 7 memory systems, and 4 agent integrations. It was built by harvesting 42 battle-tested components from a production SWE agent orchestrator and writing 19 new files for multi-model fleet architecture. The total codebase — source, tests, config, prompts — was built across a single implementation sprint.*
+*CLAW is ~18,000 lines of Python, 1,153 tests, 18 evaluation prompts, 7 memory systems, 4 agent integrations (all OpenRouter-capable), 30+ database tables, and 7 CLI commands. It was built by harvesting 42 battle-tested components from a production SWE agent orchestrator and writing 19 new files for multi-model fleet architecture. The total codebase — source, tests, config, prompts — was built across a single implementation sprint.*

@@ -390,12 +390,14 @@ def enhance(
     repo: str = typer.Argument(..., help="Path to the repository to enhance"),
     mode: str = typer.Option("attended", "--mode", "-m", help="Mode: attended, supervised, autonomous"),
     max_tasks: int = typer.Option(10, "--max-tasks", help="Maximum number of tasks to process"),
+    battery: bool = typer.Option(False, "--battery", "-b", help="Use full evaluation battery (MesoClaw) instead of structural analysis"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
 ) -> None:
     """Enhance a repository: evaluate, plan, dispatch, verify, learn.
 
     Runs the full MesoClaw pipeline on the target repo.
+    Use --battery to run the full 18-prompt evaluation battery.
     """
     _setup_logging(verbose)
 
@@ -408,7 +410,10 @@ def enhance(
         console.print(f"[red]Invalid mode: {mode}. Use attended, supervised, or autonomous.[/red]")
         raise typer.Exit(1)
 
-    asyncio.run(_enhance_async(repo_path, config, mode, max_tasks))
+    if battery:
+        asyncio.run(_enhance_battery_async(repo_path, config, mode, max_tasks))
+    else:
+        asyncio.run(_enhance_async(repo_path, config, mode, max_tasks))
 
 
 async def _enhance_async(
@@ -534,6 +539,94 @@ async def _enhance_async(
         console.print(f"\n[bold]Enhancement Summary[/bold]")
         console.print(f"  Completed: {completed}")
         console.print(f"  Failed: {failed}")
+        console.print(f"  Results stored in {ctx.config.database.db_path}")
+
+    finally:
+        await ctx.close()
+
+
+async def _enhance_battery_async(
+    repo_path: Path,
+    config_path: Optional[str],
+    mode: str,
+    max_tasks: int,
+) -> None:
+    """Run enhance using the full MesoClaw pipeline with evaluation battery."""
+    from claw.core.factory import ClawFactory
+    from claw.core.models import Project
+    from claw.cycle import MesoClaw
+
+    config_p = Path(config_path) if config_path else None
+    ctx = await ClawFactory.create(config_path=config_p, workspace_dir=repo_path)
+
+    try:
+        project = Project(
+            name=repo_path.name,
+            repo_path=str(repo_path),
+        )
+        await ctx.repository.create_project(project)
+
+        console.print(f"\n[bold]CLAW Enhancement (Battery Mode): {repo_path.name}[/bold]")
+        console.print(f"  Repository: {repo_path}")
+        console.print(f"  Mode: {mode}")
+        console.print(f"  Agents: {', '.join(ctx.agents.keys()) or 'none'}")
+
+        if not ctx.agents:
+            console.print("[red]No agents available. Enable at least one agent in claw.toml.[/red]")
+            return
+
+        # Run MesoClaw which handles: evaluate -> plan -> dispatch -> verify -> learn
+        meso = MesoClaw(
+            ctx=ctx,
+            project_id=project.id,
+            repo_path=str(repo_path),
+        )
+
+        console.print("\n[cyan]Running MesoClaw pipeline (evaluate -> plan -> execute -> learn)...[/cyan]")
+
+        progress_state = {"step": "starting", "detail": "", "start": _time.monotonic()}
+
+        def on_step(step: str, detail: str) -> None:
+            progress_state["step"] = step
+            progress_state["detail"] = detail
+
+        async def run_with_progress():
+            cycle_task = asyncio.create_task(meso.run_cycle(on_step=on_step))
+            step_icons = {
+                "grab": "[cyan]grab[/cyan]",
+                "evaluate": "[cyan]evaluate[/cyan]",
+                "decide": "[yellow]decide[/yellow]",
+                "act": "[bold green]act[/bold green]",
+                "verify": "[magenta]verify[/magenta]",
+                "learn": "[blue]learn[/blue]",
+                "done": "[green]done[/green]",
+            }
+            with Live(console=console, refresh_per_second=2, transient=True) as live:
+                while not cycle_task.done():
+                    elapsed = _time.monotonic() - progress_state["start"]
+                    step = progress_state["step"]
+                    icon = step_icons.get(step, step)
+                    detail = progress_state["detail"]
+                    mins = int(elapsed // 60)
+                    secs = int(elapsed % 60)
+                    time_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
+                    live.update(
+                        Text.from_markup(
+                            f"    [{time_str}] {icon}  {detail}"
+                        )
+                    )
+                    await asyncio.sleep(0.5)
+            return cycle_task.result()
+
+        result = await run_with_progress()
+
+        # Display results
+        console.print(f"\n[bold]Enhancement Summary (Battery Mode)[/bold]")
+        console.print(f"  Success: {result.success}")
+        console.print(f"  Tasks processed: {result.outcome.approach_summary[:200] if result.outcome.approach_summary else 'N/A'}")
+        console.print(f"  Duration: {result.duration_seconds:.1f}s")
+        console.print(f"  Tokens: {result.tokens_used}")
+        console.print(f"  Cost: ${result.cost_usd:.4f}")
         console.print(f"  Results stored in {ctx.config.database.db_path}")
 
     finally:

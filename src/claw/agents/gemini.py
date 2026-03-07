@@ -71,17 +71,39 @@ class GeminiAgent(AgentInterface):
 
     async def health_check(self) -> AgentHealth:
         """Check Gemini availability."""
-        if self.mode == AgentMode.CLI:
+        if self.mode == AgentMode.OPENROUTER:
+            return await self._openrouter_health_check()
+        elif self.mode == AgentMode.CLI:
             return await self._cli_health_check()
         else:
             return await self._api_health_check()
 
     async def execute(self, task: TaskContext, context: Optional[Any] = None) -> TaskOutcome:
         """Execute a task using Gemini."""
-        if self.mode == AgentMode.CLI:
+        if self.mode == AgentMode.OPENROUTER:
+            return await self.execute_openrouter(task, context)
+        elif self.mode == AgentMode.CLI:
             return await self._execute_cli(task, context)
         else:
             return await self._execute_api(task, context)
+
+    async def _openrouter_health_check(self) -> AgentHealth:
+        """Check OpenRouter availability for this agent."""
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            return AgentHealth(
+                agent_id="gemini", available=False, mode=AgentMode.OPENROUTER,
+                error="OPENROUTER_API_KEY not set",
+            )
+        if not self.model:
+            return AgentHealth(
+                agent_id="gemini", available=False, mode=AgentMode.OPENROUTER,
+                error="No model configured in claw.toml",
+            )
+        return AgentHealth(
+            agent_id="gemini", available=True, mode=AgentMode.OPENROUTER,
+            version=f"openrouter:{self.model}",
+        )
 
     # ------------------------------------------------------------------
     # Repo serialization (1M context window leverage)

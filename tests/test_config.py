@@ -22,7 +22,7 @@ class TestLoadConfig:
         config = load_config()
         assert "claude" in config.agents
         assert config.agents["claude"].enabled is True
-        assert config.agents["claude"].mode == "cli"
+        assert config.agents["claude"].mode == "openrouter"
 
     def test_routing_config(self):
         config = load_config()

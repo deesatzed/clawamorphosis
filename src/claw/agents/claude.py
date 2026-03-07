@@ -55,17 +55,39 @@ class ClaudeCodeAgent(AgentInterface):
 
     async def health_check(self) -> AgentHealth:
         """Check Claude Code availability."""
-        if self.mode == AgentMode.CLI:
+        if self.mode == AgentMode.OPENROUTER:
+            return await self._openrouter_health_check()
+        elif self.mode == AgentMode.CLI:
             return await self._cli_health_check()
         else:
             return await self._api_health_check()
 
     async def execute(self, task: TaskContext, context: Optional[Any] = None) -> TaskOutcome:
         """Execute a task using Claude Code."""
-        if self.mode == AgentMode.CLI:
+        if self.mode == AgentMode.OPENROUTER:
+            return await self.execute_openrouter(task, context)
+        elif self.mode == AgentMode.CLI:
             return await self._execute_cli(task, context)
         else:
             return await self._execute_api(task, context)
+
+    async def _openrouter_health_check(self) -> AgentHealth:
+        """Check OpenRouter availability for this agent."""
+        api_key = os.getenv("OPENROUTER_API_KEY", "")
+        if not api_key:
+            return AgentHealth(
+                agent_id="claude", available=False, mode=AgentMode.OPENROUTER,
+                error="OPENROUTER_API_KEY not set",
+            )
+        if not self.model:
+            return AgentHealth(
+                agent_id="claude", available=False, mode=AgentMode.OPENROUTER,
+                error="No model configured in claw.toml",
+            )
+        return AgentHealth(
+            agent_id="claude", available=True, mode=AgentMode.OPENROUTER,
+            version=f"openrouter:{self.model}",
+        )
 
     # ------------------------------------------------------------------
     # CLI mode
@@ -238,7 +260,7 @@ class ClaudeCodeAgent(AgentInterface):
             # Minimal API call to verify connectivity
             response = await asyncio.to_thread(
                 client.messages.create,
-                model=self.model or "claude-sonnet-4-20250514",
+                model=self.model,
                 max_tokens=10,
                 messages=[{"role": "user", "content": "ping"}],
             )
@@ -267,7 +289,7 @@ class ClaudeCodeAgent(AgentInterface):
         try:
             response = await asyncio.to_thread(
                 client.messages.create,
-                model=self.model or "claude-sonnet-4-20250514",
+                model=self.model,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
