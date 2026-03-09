@@ -130,6 +130,53 @@ class HypothesisEntry(BaseModel):
     created_at: datetime = Field(default_factory=_now)
 
 
+class CapabilityIO(BaseModel):
+    """Single input or output port of a capability."""
+    name: str
+    type: str  # "text", "code_patch", "metrics_data", "event_list", etc.
+    required: bool = True
+    description: str = ""
+
+
+class ComposabilityInterface(BaseModel):
+    """Describes how a capability can chain with others."""
+    can_chain_after: list[str] = Field(default_factory=list)  # domain tags
+    can_chain_before: list[str] = Field(default_factory=list)
+    standalone: bool = True
+
+
+class CapabilityData(BaseModel):
+    """Structured capability metadata stored as JSON in methodologies.capability_data."""
+    inputs: list[CapabilityIO] = Field(default_factory=list)
+    outputs: list[CapabilityIO] = Field(default_factory=list)
+    domain: list[str] = Field(default_factory=list)
+    composability: ComposabilityInterface = Field(default_factory=ComposabilityInterface)
+    capability_type: str = "transformation"  # transformation, analysis, generation, validation
+
+
+class SynergyEdgeType(str, enum.Enum):
+    DEPENDS_ON = "depends_on"
+    ENHANCES = "enhances"
+    COMPETES_WITH = "competes_with"
+    FEEDS_INTO = "feeds_into"
+    SYNERGY = "synergy"
+    CO_RETRIEVAL = "co_retrieval"
+
+
+class SynergyExploration(BaseModel):
+    """A record of an explored capability pair."""
+    id: str = Field(default_factory=_new_id)
+    cap_a_id: str
+    cap_b_id: str
+    explored_at: datetime = Field(default_factory=_now)
+    result: str = "pending"  # pending, synergy, no_match, error, stale
+    synergy_score: Optional[float] = None
+    synergy_type: Optional[str] = None
+    edge_id: Optional[str] = None
+    exploration_method: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class Methodology(BaseModel):
     id: str = Field(default_factory=_new_id)
     problem_description: str
@@ -153,6 +200,9 @@ class Methodology(BaseModel):
     parent_ids: list[str] = Field(default_factory=list)
     superseded_by: Optional[str] = None
     prism_data: Optional[dict] = None
+    capability_data: Optional[dict] = None
+    novelty_score: Optional[float] = None
+    potential_score: Optional[float] = None
 
 
 class PeerReview(BaseModel):

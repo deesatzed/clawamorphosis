@@ -132,6 +132,56 @@ class EvolutionConfig(BaseModel):
     promotion_threshold: float = 0.6
 
 
+class GovernanceConfig(BaseModel):
+    """Memory governance configuration."""
+    max_methodologies: int = 2000
+    quota_warning_pct: float = 0.80
+    gc_dead_on_sweep: bool = True
+    dedup_similarity_threshold: float = 0.88
+    dedup_enabled: bool = True
+    episodic_retention_days: int = 90
+    sweep_interval_cycles: int = 10
+    sweep_on_startup: bool = True
+    self_consume_enabled: bool = True
+    self_consume_min_tasks: int = 10
+    self_consume_max_generation: int = 3
+    self_consume_lookback: int = 20
+    max_db_size_mb: int = 500
+    mining_min_description_length: int = 20
+
+
+class AssimilationConfig(BaseModel):
+    """Capability assimilation configuration."""
+    enabled: bool = True
+    synergy_candidate_limit: int = 20
+    synergy_score_threshold: float = 0.6
+    auto_compose_threshold: float = 0.8
+    max_compositions_per_cycle: int = 3
+    io_compatibility_weight: float = 0.3
+    domain_overlap_weight: float = 0.2
+    embedding_similarity_weight: float = 0.3
+    llm_analysis_weight: float = 0.2
+    # Novelty scoring
+    novelty_enabled: bool = True
+    novelty_nearest_neighbor_k: int = 5
+    novelty_nn_weight: float = 0.35
+    novelty_domain_uniqueness_weight: float = 0.25
+    novelty_type_rarity_weight: float = 0.15
+    novelty_centroid_distance_weight: float = 0.25
+    # Potential scoring
+    potential_io_generality_weight: float = 0.30
+    potential_composability_weight: float = 0.25
+    potential_domain_breadth_weight: float = 0.20
+    potential_standalone_weight: float = 0.10
+    potential_llm_weight: float = 0.15
+    potential_llm_threshold: float = 0.4
+    # Lifecycle + retrieval
+    novelty_lifecycle_protection_days: int = 90
+    novelty_protection_threshold: float = 0.7
+    novelty_retrieval_boost: float = 0.15
+    potential_retrieval_boost: float = 0.10
+
+
 class FleetConfig(BaseModel):
     max_concurrent_repos: int = 4
     enhancement_branch_prefix: str = "claw/enhancement"
@@ -157,6 +207,8 @@ class ClawConfig(BaseModel):
     routing: RoutingConfig = Field(default_factory=RoutingConfig)
     evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)
+    governance: GovernanceConfig = Field(default_factory=GovernanceConfig)
+    assimilation: AssimilationConfig = Field(default_factory=AssimilationConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
 

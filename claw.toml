@@ -85,6 +85,52 @@ enhancement_branch_prefix = "claw/enhancement"
 max_cost_per_repo_usd = 5.0
 max_cost_per_day_usd = 50.0
 
+[governance]
+max_methodologies = 2000
+quota_warning_pct = 0.80
+gc_dead_on_sweep = true
+dedup_similarity_threshold = 0.88
+dedup_enabled = true
+episodic_retention_days = 90
+sweep_interval_cycles = 10
+sweep_on_startup = true
+self_consume_enabled = true
+self_consume_min_tasks = 10
+self_consume_max_generation = 3
+self_consume_lookback = 20
+max_db_size_mb = 500
+mining_min_description_length = 20
+
+[assimilation]
+enabled = true
+synergy_candidate_limit = 20
+synergy_score_threshold = 0.6
+auto_compose_threshold = 0.8
+max_compositions_per_cycle = 3
+io_compatibility_weight = 0.3
+domain_overlap_weight = 0.2
+embedding_similarity_weight = 0.3
+llm_analysis_weight = 0.2
+# Novelty scoring
+novelty_enabled = true
+novelty_nearest_neighbor_k = 5
+novelty_nn_weight = 0.35
+novelty_domain_uniqueness_weight = 0.25
+novelty_type_rarity_weight = 0.15
+novelty_centroid_distance_weight = 0.25
+# Potential scoring
+potential_io_generality_weight = 0.30
+potential_composability_weight = 0.25
+potential_domain_breadth_weight = 0.20
+potential_standalone_weight = 0.10
+potential_llm_weight = 0.15
+potential_llm_threshold = 0.4
+# Lifecycle + retrieval integration
+novelty_lifecycle_protection_days = 90
+novelty_protection_threshold = 0.7
+novelty_retrieval_boost = 0.15
+potential_retrieval_boost = 0.10
+
 [agents.claude]
 enabled = true
 mode = "openrouter"

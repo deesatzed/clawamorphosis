@@ -78,6 +78,8 @@ class HybridSearch:
         mmr_enabled: bool = True,
         mmr_lambda: float = 0.7,
         prism_engine: Any = None,
+        novelty_retrieval_boost: float = 0.0,
+        potential_retrieval_boost: float = 0.0,
     ):
         self.repository = repository
         self.embedding_engine = embedding_engine
@@ -88,6 +90,8 @@ class HybridSearch:
         self._mmr_enabled = mmr_enabled
         self._mmr_lambda = mmr_lambda
         self.prism_engine = prism_engine
+        self.novelty_retrieval_boost = novelty_retrieval_boost
+        self.potential_retrieval_boost = potential_retrieval_boost
 
     async def search(
         self,
@@ -301,6 +305,13 @@ class HybridSearch:
             # Blend similarity (60%) with fitness (40%) for final ranking
             fitness = get_fitness_score(result.methodology)
             result.combined_score = similarity_score * 0.6 + fitness * 0.4
+
+            # Novelty & potential retrieval boost: surface novel/high-potential items
+            if self.novelty_retrieval_boost > 0 and result.methodology.novelty_score is not None:
+                result.combined_score += self.novelty_retrieval_boost * result.methodology.novelty_score
+            if self.potential_retrieval_boost > 0 and result.methodology.potential_score is not None:
+                result.combined_score += self.potential_retrieval_boost * result.methodology.potential_score
+
             result.confidence_score, result.conflict_score = self._derive_memory_signals(result)
 
         # Filter out dead/dormant methodologies from retrieval

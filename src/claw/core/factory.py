@@ -46,6 +46,9 @@ class ClawContext:
     prompt_evolver: Any = None
     pattern_learner: Any = None
     miner: Any = None
+    governance: Any = None
+    self_consumer: Any = None
+    assimilation_engine: Any = None
 
     async def close(self) -> None:
         """Cleanly shut down all components."""
@@ -73,8 +76,8 @@ class ClawFactory:
         # Database
         engine = DatabaseEngine(config.database)
         await engine.connect()
-        await engine.initialize_schema()
         await engine.apply_migrations()
+        await engine.initialize_schema()
         repository = Repository(engine)
 
         # Embeddings
@@ -165,6 +168,13 @@ class ClawFactory:
         from claw.memory.error_kb import ErrorKB
         error_kb = ErrorKB(repository=repository)
 
+        # Memory Governance
+        from claw.memory.governance import MemoryGovernor
+        governance = MemoryGovernor(
+            repository=repository,
+            config=config.governance,
+        )
+
         # Semantic Memory
         from claw.memory.semantic import SemanticMemory
         from claw.memory.hybrid_search import HybridSearch
@@ -172,12 +182,15 @@ class ClawFactory:
             repository=repository,
             embedding_engine=embeddings,
             prism_engine=prism_engine,
+            novelty_retrieval_boost=config.assimilation.novelty_retrieval_boost,
+            potential_retrieval_boost=config.assimilation.potential_retrieval_boost,
         )
         semantic_memory = SemanticMemory(
             repository=repository,
             embedding_engine=embeddings,
             hybrid_search=hybrid_search,
             prism_engine=prism_engine,
+            governance=governance,
         )
 
         # Prompt Evolver
@@ -195,14 +208,49 @@ class ClawFactory:
             semantic_memory=semantic_memory,
         )
 
-        # Repo Miner
+        # Repo Miner (assimilation_engine wired after creation below)
         from claw.miner import RepoMiner
         miner = RepoMiner(
             repository=repository,
             llm_client=llm_client,
             semantic_memory=semantic_memory,
             config=config,
+            governance=governance,
         )
+
+        # Self-Consumer
+        from claw.self_consumer import SelfConsumer
+        self_consumer = SelfConsumer(
+            repository=repository,
+            llm_client=llm_client,
+            semantic_memory=semantic_memory,
+            config=config,
+            governance_config=config.governance,
+        )
+
+        # Capability Assimilation Engine
+        from claw.evolution.assimilation import CapabilityAssimilationEngine
+        assimilation_engine = CapabilityAssimilationEngine(
+            repository=repository,
+            llm_client=llm_client,
+            config=config,
+        )
+
+        # Wire assimilation into miner and self-consumer
+        miner.assimilation_engine = assimilation_engine
+        self_consumer.assimilation_engine = assimilation_engine
+
+        # Run startup governance sweep
+        if config.governance.sweep_on_startup:
+            try:
+                sweep_report = await governance.run_full_sweep()
+                logger.info(
+                    "Startup governance sweep: gc=%d, culled=%d",
+                    sweep_report.dead_collected,
+                    sweep_report.quota_culled,
+                )
+            except Exception as e:
+                logger.warning("Startup governance sweep failed: %s", e)
 
         ctx = ClawContext(
             config=config,
@@ -224,6 +272,9 @@ class ClawFactory:
             prompt_evolver=prompt_evolver,
             pattern_learner=pattern_learner,
             miner=miner,
+            governance=governance,
+            self_consumer=self_consumer,
+            assimilation_engine=assimilation_engine,
         )
 
         agent_names = list(agents.keys()) if agents else ["none"]

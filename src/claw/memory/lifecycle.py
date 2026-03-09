@@ -42,6 +42,8 @@ NICHE_COLLISION_SIMILARITY = 0.92
 def evaluate_transition(
     methodology: Methodology,
     now: Optional[datetime] = None,
+    novelty_protection_threshold: float = 0.7,
+    novelty_protection_days: int = 90,
 ) -> Optional[str]:
     """Determine if a methodology should transition to a new lifecycle state.
 
@@ -50,6 +52,8 @@ def evaluate_transition(
     Args:
         methodology: The methodology to evaluate.
         now: Current time. Defaults to utcnow.
+        novelty_protection_threshold: Min novelty_score for decay protection.
+        novelty_protection_days: Max age in days for novelty protection.
 
     Returns:
         The new lifecycle state string, or None if no transition.
@@ -64,14 +68,24 @@ def evaluate_transition(
     if current == LifecycleState.DEAD.value:
         return None
 
+    # Novelty protection: novel capabilities are shielded from decay transitions
+    # for a configurable period (default 90 days) to give them time to prove value
+    novel_protected = _is_novelty_protected(
+        methodology, now, novelty_protection_threshold, novelty_protection_days
+    )
+
     # Dormant -> dead (365 days without retrieval)
     if current == LifecycleState.DORMANT.value:
+        if novel_protected:
+            return None  # Protected from death
         if _days_since_retrieval(methodology, now) >= DEAD_DAYS:
             return LifecycleState.DEAD.value
         return None
 
     # Declining -> dormant (180 days without retrieval)
     if current == LifecycleState.DECLINING.value:
+        if novel_protected:
+            return None  # Protected from going dormant
         if _days_since_retrieval(methodology, now) >= DORMANT_DAYS:
             return LifecycleState.DORMANT.value
         # Rehabilitation: fitness recovers
@@ -290,3 +304,23 @@ def _has_file_overlap(a: Methodology, b: Methodology) -> bool:
     a_set = {f.lower() for f in a.files_affected}
     b_set = {f.lower() for f in b.files_affected}
     return bool(a_set & b_set)
+
+
+def _is_novelty_protected(
+    methodology: Methodology,
+    now: datetime,
+    threshold: float,
+    max_age_days: int,
+) -> bool:
+    """Check if a methodology is protected from decay by novelty score.
+
+    A methodology is protected if:
+    1. It has a novelty_score >= threshold
+    2. It was created less than max_age_days ago
+    """
+    if methodology.novelty_score is None:
+        return False
+    if methodology.novelty_score < threshold:
+        return False
+    age_days = (now - methodology.created_at).total_seconds() / 86400.0
+    return age_days < max_age_days

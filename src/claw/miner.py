@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -94,6 +95,18 @@ class MiningReport:
     total_duration_seconds: float = 0.0
     repo_results: list[RepoMiningResult] = field(default_factory=list)
     tasks: list[Task] = field(default_factory=list)
+
+
+@dataclass
+class RepoCandidate:
+    """A discovered git repo with metadata for dedup decisions."""
+    path: Path
+    name: str                # directory name (e.g., "ace-forecaster-v3")
+    canonical_name: str      # stripped name (e.g., "ace-forecaster")
+    depth: int               # nesting depth from scan root
+    file_count: int = 0      # number of source files (proxy for completeness)
+    last_commit_ts: float = 0.0  # timestamp of last git activity
+    total_bytes: int = 0     # approximate source size
 
 
 def serialize_repo(repo_path: str | Path, max_bytes: int = _MAX_REPO_BYTES) -> tuple[str, int]:
@@ -262,11 +275,15 @@ class RepoMiner:
         llm_client: LLMClient,
         semantic_memory: SemanticMemory,
         config: ClawConfig,
+        governance: Any = None,
+        assimilation_engine: Any = None,
     ):
         self.repository = repository
         self.llm_client = llm_client
         self.semantic_memory = semantic_memory
         self.config = config
+        self.governance = governance
+        self.assimilation_engine = assimilation_engine
         self._prompt_template: Optional[str] = None
 
     def _get_prompt_template(self) -> str:
@@ -298,6 +315,8 @@ class RepoMiner:
         min_relevance: float = 0.6,
         generate_tasks: bool = True,
         on_repo_complete: Optional[Any] = None,
+        max_depth: int = 6,
+        dedup_iterations: bool = True,
     ) -> MiningReport:
         """Discover repos in a directory and mine each.
 
@@ -308,6 +327,8 @@ class RepoMiner:
             min_relevance: Minimum relevance for task generation.
             generate_tasks: Whether to create enhancement tasks.
             on_repo_complete: Optional callback(repo_name, result) for progress.
+            max_depth: Maximum directory depth for repo discovery.
+            dedup_iterations: If True, dedup repo iterations by canonical name.
 
         Returns:
             MiningReport with aggregate results.
@@ -319,13 +340,22 @@ class RepoMiner:
             raise NotADirectoryError(f"Not a directory: {base}")
 
         # Discover repos by looking for .git directories
-        repos = _discover_repos(base)
-        if not repos:
+        candidates = _discover_repos(base, max_depth=max_depth)
+        if not candidates:
             logger.info("No git repos found in %s", base)
             return MiningReport()
 
+        # Dedup iterations if requested
+        if dedup_iterations:
+            candidates, skipped = _dedup_iterations(candidates)
+            if skipped:
+                logger.info(
+                    "Dedup: %d selected, %d skipped",
+                    len(candidates), len(skipped),
+                )
+
         # Limit repos
-        repos = repos[:max_repos]
+        repos = [(c.path, c.name) for c in candidates[:max_repos]]
         logger.info("Found %d repos to mine in %s", len(repos), base)
 
         report = MiningReport()
@@ -400,9 +430,21 @@ class RepoMiner:
             repo_name, file_count, len(repo_content.encode()),
         )
 
+        # Check what CLAW already knows from this repo
+        existing_knowledge = await self._check_already_mined(repo_name)
+
         # Build prompt
         template = self._get_prompt_template()
         prompt = template.replace("{repo_content}", repo_content)
+
+        # Include existing knowledge context to avoid rediscovering patterns
+        if existing_knowledge:
+            context_block = (
+                "\n\n# Context: CLAW already knows the following from this repo:\n"
+                + "\n".join(f"- {title}" for title in existing_knowledge)
+                + "\n\n# Instructions: DO NOT repeat the above. Focus on patterns not yet captured.\n"
+            )
+            prompt = context_block + prompt
 
         # Call LLM
         model = self._get_mining_model()
@@ -449,16 +491,24 @@ class RepoMiner:
         self,
         finding: MiningFinding,
         target_project_id: str,
-    ) -> str:
+    ) -> Optional[str]:
         """Store a mining finding in semantic memory as a Methodology.
+
+        Applies enhanced quality gate and pre-save dedup before storing.
 
         Args:
             finding: The extracted finding.
             target_project_id: Project to associate with (unused in methodology but tracked via tags).
 
         Returns:
-            The methodology ID.
+            The methodology ID, or None if blocked by quality gate or dedup.
         """
+        # Enhanced quality gate
+        passes, reason = self._enhanced_quality_gate(finding)
+        if not passes:
+            logger.info("Quality gate blocked finding '%s': %s", finding.title, reason)
+            return None
+
         # Build a rich problem description for embedding
         problem_desc = (
             f"[Mined from {finding.source_repo}] {finding.title}: "
@@ -494,7 +544,66 @@ class RepoMiner:
         )
 
         logger.debug("Stored finding '%s' as methodology %s", finding.title, methodology.id)
+
+        # Trigger capability assimilation
+        if self.assimilation_engine is not None:
+            try:
+                await self.assimilation_engine.assimilate(methodology.id)
+            except Exception as e:
+                logger.warning("Assimilation failed for %s: %s", methodology.id, e)
+
         return methodology.id
+
+    async def _check_already_mined(self, repo_name: str) -> list[str]:
+        """Check what CLAW already knows from a repo.
+
+        Searches semantic memory for methodologies tagged with source:{repo_name}.
+
+        Returns:
+            List of existing finding titles/descriptions.
+        """
+        try:
+            existing = await self.repository.get_methodologies_by_tag(
+                f"source:{repo_name}", limit=50
+            )
+            titles = [m.problem_description[:200] for m in existing]
+            if titles:
+                logger.info(
+                    "Found %d existing findings from %s", len(titles), repo_name
+                )
+            return titles
+        except Exception as e:
+            logger.warning("Failed to check already-mined for %s: %s", repo_name, e)
+            return []
+
+    def _enhanced_quality_gate(
+        self, finding: MiningFinding
+    ) -> tuple[bool, str]:
+        """Multi-dimensional quality gate beyond simple relevance.
+
+        Checks:
+        1. Relevance score >= 0.4 (existing minimum)
+        2. Description length >= configured minimum
+        3. Category is valid
+
+        Returns:
+            (passes, rejection_reason).
+        """
+        if finding.relevance_score < 0.4:
+            return False, f"relevance too low ({finding.relevance_score:.2f} < 0.4)"
+
+        min_desc = getattr(self.config, "governance", None)
+        min_desc_len = 50
+        if min_desc and hasattr(min_desc, "mining_min_description_length"):
+            min_desc_len = min_desc.mining_min_description_length
+
+        if len(finding.description) < min_desc_len:
+            return False, f"description too short ({len(finding.description)} < {min_desc_len})"
+
+        if finding.category not in _VALID_CATEGORIES:
+            return False, f"invalid category: {finding.category}"
+
+        return True, ""
 
     async def _generate_tasks(
         self,
@@ -554,64 +663,227 @@ class RepoMiner:
         return tasks
 
 
-def _discover_repos(base: Path) -> list[tuple[Path, str]]:
-    """Find git repositories under a base directory.
+def _canonicalize_name(name: str) -> str:
+    """Strip version/variant suffixes from a repo directory name.
 
-    Looks for .git directories up to 2 levels deep. Returns list of
-    (repo_path, repo_name) tuples sorted by name.
+    Iteratively removes common suffixes like -v2, -final, -backup, _old,
+    trailing digits after a dash, etc.
+
+    Examples:
+        "ace-forecaster-v3"  -> "ace-forecaster"
+        "grokflow-cli-final" -> "grokflow-cli"
+        "my-project-2"       -> "my-project"
+        "tool-wip"           -> "tool"
+        "tool-dev-v2"        -> "tool"
+    """
+    result = name.lower().strip()
+    suffix_re = re.compile(
+        r'[-_](v?\d+|final|latest|old|backup|copy|wip|dev|test|staging|prod|new|orig)$'
+    )
+    while True:
+        new = suffix_re.sub('', result)
+        if new == result:
+            break
+        result = new
+    return result
+
+
+def _collect_repo_metadata(repo_path: Path) -> tuple[int, float, int]:
+    """Collect lightweight metadata for a repo (no subprocess calls).
+
+    Returns:
+        (file_count, last_commit_ts, total_bytes)
+    """
+    file_count = 0
+    total_bytes = 0
+
+    # Count source files in top-level directory only (fast scan)
+    try:
+        with os.scandir(repo_path) as entries:
+            for entry in entries:
+                if entry.is_file(follow_symlinks=False):
+                    _, ext = os.path.splitext(entry.name)
+                    if ext.lower() in _CODE_EXTENSIONS:
+                        file_count += 1
+                        try:
+                            total_bytes += entry.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            pass
+    except (PermissionError, OSError):
+        pass
+
+    # Also count files in immediate subdirectories (one level deeper)
+    try:
+        with os.scandir(repo_path) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False) and not entry.name.startswith('.') and entry.name not in _SKIP_DIRS:
+                    try:
+                        with os.scandir(entry.path) as sub_entries:
+                            for sub in sub_entries:
+                                if sub.is_file(follow_symlinks=False):
+                                    _, ext = os.path.splitext(sub.name)
+                                    if ext.lower() in _CODE_EXTENSIONS:
+                                        file_count += 1
+                                        try:
+                                            total_bytes += sub.stat(follow_symlinks=False).st_size
+                                        except OSError:
+                                            pass
+                    except (PermissionError, OSError):
+                        pass
+    except (PermissionError, OSError):
+        pass
+
+    # Use .git directory mtime as proxy for last commit timestamp
+    last_commit_ts = 0.0
+    git_dir = repo_path / ".git"
+    for ref_name in ("refs/heads/main", "refs/heads/master", "HEAD"):
+        ref_path = git_dir / ref_name
+        try:
+            last_commit_ts = max(last_commit_ts, ref_path.stat().st_mtime)
+        except OSError:
+            pass
+    if last_commit_ts == 0.0:
+        try:
+            last_commit_ts = git_dir.stat().st_mtime
+        except OSError:
+            pass
+
+    return file_count, last_commit_ts, total_bytes
+
+
+def _discover_repos(
+    base: Path,
+    max_depth: int = 6,
+) -> list[RepoCandidate]:
+    """Find git repositories under a base directory using BFS.
+
+    Scans up to max_depth levels deep using os.scandir() for performance.
+    Stops descending into a directory once .git is found.
+    Collects metadata for each repo to support iteration dedup.
 
     Args:
         base: Root directory to scan.
+        max_depth: Maximum directory depth to search (default 6).
 
     Returns:
-        List of (path, name) tuples for discovered repos.
+        List of RepoCandidate objects sorted by canonical_name then name.
     """
-    repos: list[tuple[Path, str]] = []
-    seen: set[Path] = set()
+    candidates: list[RepoCandidate] = []
+    seen: set[str] = set()  # resolved path strings for dedup
 
-    # Check if base itself is a repo
-    if (base / ".git").exists():
-        repos.append((base, base.name))
-        seen.add(base.resolve())
+    # BFS queue: (directory_path, current_depth)
+    frontier: list[tuple[Path, int]] = [(base, 0)]
 
-    # Check immediate children
-    try:
-        for child in sorted(base.iterdir()):
-            if not child.is_dir():
-                continue
-            resolved = child.resolve()
-            if resolved in seen:
-                continue
-            if child.name.startswith("."):
-                continue
-            if child.name in _SKIP_DIRS:
-                continue
-            if (child / ".git").exists():
-                repos.append((child, child.name))
-                seen.add(resolved)
-                continue
+    while frontier:
+        next_frontier: list[tuple[Path, int]] = []
 
-            # Check one level deeper
+        for dir_path, depth in frontier:
+            # Check if this directory is a git repo
+            git_marker = dir_path / ".git"
             try:
-                for grandchild in sorted(child.iterdir()):
-                    if not grandchild.is_dir():
-                        continue
-                    gc_resolved = grandchild.resolve()
-                    if gc_resolved in seen:
-                        continue
-                    if grandchild.name.startswith("."):
-                        continue
-                    if grandchild.name in _SKIP_DIRS:
-                        continue
-                    if (grandchild / ".git").exists():
-                        repos.append((grandchild, grandchild.name))
-                        seen.add(gc_resolved)
-            except PermissionError:
-                continue
-    except PermissionError:
-        pass
+                is_repo = git_marker.exists()
+            except (PermissionError, OSError):
+                is_repo = False
 
-    return repos
+            if is_repo:
+                try:
+                    resolved = str(dir_path.resolve())
+                except OSError:
+                    resolved = str(dir_path)
+
+                if resolved not in seen:
+                    seen.add(resolved)
+                    name = dir_path.name
+                    file_count, last_commit_ts, total_bytes = _collect_repo_metadata(dir_path)
+                    candidates.append(RepoCandidate(
+                        path=dir_path,
+                        name=name,
+                        canonical_name=_canonicalize_name(name),
+                        depth=depth,
+                        file_count=file_count,
+                        last_commit_ts=last_commit_ts,
+                        total_bytes=total_bytes,
+                    ))
+                # Don't descend into repos — they're leaf nodes
+                continue
+
+            # Not a repo — descend if within depth limit
+            if depth >= max_depth:
+                continue
+
+            try:
+                with os.scandir(dir_path) as entries:
+                    for entry in sorted(entries, key=lambda e: e.name):
+                        if not entry.is_dir(follow_symlinks=False):
+                            continue
+                        if entry.name.startswith("."):
+                            continue
+                        if entry.name in _SKIP_DIRS:
+                            continue
+                        next_frontier.append((Path(entry.path), depth + 1))
+            except (PermissionError, OSError):
+                continue
+
+        frontier = next_frontier
+
+    # Sort by canonical_name, then by name for deterministic ordering
+    candidates.sort(key=lambda c: (c.canonical_name, c.name))
+    return candidates
+
+
+def _dedup_iterations(
+    candidates: list[RepoCandidate],
+) -> tuple[list[RepoCandidate], list[tuple[RepoCandidate, str]]]:
+    """Deduplicate repo iterations by canonical name.
+
+    Groups candidates by canonical_name and picks the best version
+    based on: last_commit_ts (primary), file_count (secondary),
+    total_bytes (tertiary).
+
+    Args:
+        candidates: All discovered repo candidates.
+
+    Returns:
+        (selected, skipped) where skipped includes (candidate, reason) tuples.
+    """
+    from collections import defaultdict
+
+    groups: dict[str, list[RepoCandidate]] = defaultdict(list)
+    for c in candidates:
+        groups[c.canonical_name].append(c)
+
+    selected: list[RepoCandidate] = []
+    skipped: list[tuple[RepoCandidate, str]] = []
+
+    for canonical, group in sorted(groups.items()):
+        if len(group) == 1:
+            selected.append(group[0])
+            continue
+
+        # Score: sort by (last_commit_ts, file_count, total_bytes) descending
+        group.sort(
+            key=lambda c: (c.last_commit_ts, c.file_count, c.total_bytes),
+            reverse=True,
+        )
+
+        winner = group[0]
+        selected.append(winner)
+
+        for loser in group[1:]:
+            skipped.append((
+                loser,
+                f"superseded by {winner.name} ({winner.path})",
+            ))
+
+        if len(group) > 1:
+            logger.info(
+                "Dedup '%s': selected '%s' (%d files, ts=%.0f), skipped %d iterations",
+                canonical, winner.name, winner.file_count, winner.last_commit_ts,
+                len(group) - 1,
+            )
+
+    selected.sort(key=lambda c: (c.canonical_name, c.name))
+    return selected, skipped
 
 
 def _relevance_to_priority(relevance: float) -> int:

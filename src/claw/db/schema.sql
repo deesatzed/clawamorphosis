@@ -80,10 +80,14 @@ CREATE TABLE IF NOT EXISTS methodologies (
     fitness_vector TEXT NOT NULL DEFAULT '{}',      -- JSON string
     parent_ids TEXT NOT NULL DEFAULT '[]',          -- JSON array string
     superseded_by TEXT,
-    prism_data TEXT                                  -- JSON: PrismEmbedding (nullable)
+    prism_data TEXT,                                  -- JSON: PrismEmbedding (nullable)
+    capability_data TEXT,                              -- JSON: CapabilityData (nullable)
+    novelty_score REAL,                                -- 0.0-1.0: how different from existing KB
+    potential_score REAL                                -- 0.0-1.0: future composability/value
 );
 CREATE INDEX IF NOT EXISTS idx_meth_scope ON methodologies(scope);
 CREATE INDEX IF NOT EXISTS idx_meth_lifecycle ON methodologies(lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_meth_novelty ON methodologies(novelty_score DESC);
 
 -- Methodology embeddings (sqlite-vec virtual table)
 -- Stores 384-dimensional float32 vectors for semantic search
@@ -247,3 +251,33 @@ CREATE INDEX IF NOT EXISTS idx_episodes_project ON episodes(project_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
 CREATE INDEX IF NOT EXISTS idx_episodes_type ON episodes(event_type);
 CREATE INDEX IF NOT EXISTS idx_episodes_created ON episodes(created_at DESC);
+
+-- 14. SYNERGY_EXPLORATION_LOG (Tracks explored capability pairs — SMART dedup)
+CREATE TABLE IF NOT EXISTS synergy_exploration_log (
+    id TEXT PRIMARY KEY,
+    cap_a_id TEXT NOT NULL,
+    cap_b_id TEXT NOT NULL,
+    explored_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    result TEXT NOT NULL DEFAULT 'pending'
+        CHECK (result IN ('pending','synergy','no_match','error','stale')),
+    synergy_score REAL,
+    synergy_type TEXT,
+    edge_id TEXT,
+    exploration_method TEXT,
+    details TEXT NOT NULL DEFAULT '{}',
+    UNIQUE(cap_a_id, cap_b_id)
+);
+CREATE INDEX IF NOT EXISTS idx_synergy_log_cap_a ON synergy_exploration_log(cap_a_id);
+CREATE INDEX IF NOT EXISTS idx_synergy_log_cap_b ON synergy_exploration_log(cap_b_id);
+CREATE INDEX IF NOT EXISTS idx_synergy_log_result ON synergy_exploration_log(result);
+
+-- 15. GOVERNANCE_LOG (Audit trail for governance actions)
+CREATE TABLE IF NOT EXISTS governance_log (
+    id TEXT PRIMARY KEY,
+    action_type TEXT NOT NULL,
+    methodology_id TEXT,
+    details TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_governance_log_action ON governance_log(action_type);
+CREATE INDEX IF NOT EXISTS idx_governance_log_created ON governance_log(created_at DESC);

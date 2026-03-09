@@ -198,10 +198,36 @@ class MicroClaw(ClawCycle):
                             hints.append(
                                 f"Similar past solution: {s.methodology.methodology_notes}"
                             )
+                        # Graph-enhanced: follow synergy edges for complementary capabilities
+                        if s.methodology and self.ctx.assimilation_engine is not None:
+                            try:
+                                complements = await self.ctx.repository.get_complementary_capabilities(
+                                    s.methodology.id
+                                )
+                                for comp in complements[:2]:
+                                    hints.append(
+                                        f"Complementary capability: {comp.problem_description[:200]}"
+                                    )
+                            except Exception:
+                                pass  # Non-critical enhancement
             except Exception as e:
                 logger.warning(
                     "Semantic memory lookup failed for task %s: %s", task.id, e
                 )
+
+        # Surface top novel capabilities as hints (novelty >= 0.7)
+        if self.ctx.repository is not None:
+            try:
+                novel = await self.ctx.repository.get_most_novel_methodologies(
+                    limit=2, min_novelty=0.7
+                )
+                for nm in novel:
+                    hints.append(
+                        f"Novel capability (novelty={nm.novelty_score:.2f}): "
+                        f"{nm.problem_description[:200]}"
+                    )
+            except Exception:
+                pass  # Non-critical enhancement
 
         task_ctx = TaskContext(
             task=task,
@@ -379,10 +405,10 @@ class MicroClaw(ClawCycle):
                 cost_usd=outcome.cost_usd,
             )
 
-            # Save successful pattern to semantic memory
+            # Save successful pattern to semantic memory + trigger assimilation
             if self.ctx.semantic_memory is not None and outcome.approach_summary:
                 try:
-                    await self.ctx.semantic_memory.save_solution(
+                    saved_meth = await self.ctx.semantic_memory.save_solution(
                         problem_description=task.description,
                         solution_code=outcome.raw_output or outcome.approach_summary,
                         source_task_id=task.id,
@@ -393,6 +419,12 @@ class MicroClaw(ClawCycle):
                         "Saved successful pattern to semantic memory for task %s",
                         task.title,
                     )
+                    # Trigger capability assimilation on the newly saved methodology
+                    if saved_meth and self.ctx.assimilation_engine is not None:
+                        try:
+                            await self.ctx.assimilation_engine.assimilate(saved_meth.id)
+                        except Exception as ae:
+                            logger.warning("Assimilation failed for %s: %s", saved_meth.id, ae)
                 except Exception as e:
                     logger.warning(
                         "Failed to save pattern to semantic memory for task %s: %s",
@@ -477,6 +509,15 @@ class MicroClaw(ClawCycle):
                 "Learned: task %s failed by %s (error: %s)",
                 task.title, agent_id, error_sig,
             )
+
+        # Governance sweep (periodic, amortized over cycles)
+        if self.ctx.governance is not None:
+            try:
+                swept = await self.ctx.governance.maybe_run_sweep()
+                if swept:
+                    logger.info("Governance sweep completed during learn phase")
+            except Exception as e:
+                logger.warning("Governance sweep failed: %s", e)
 
         # Log episode
         await self.ctx.repository.log_episode(
@@ -776,14 +817,19 @@ class NanoClaw(ClawCycle):
             actions.append("evolve_prompts")
         if self.ctx.pattern_learner is not None:
             actions.append("extract_patterns")
+        if self.ctx.self_consumer is not None:
+            actions.append("self_consume")
+        if self.ctx.assimilation_engine is not None:
+            actions.append("enrich_capabilities")
 
         return actions
 
     async def act(self, decision: Any) -> Any:
         """Execute self-improvement actions.
 
-        Runs prompt evolution (A/B test evaluation + promotion) and
-        pattern extraction based on the decided actions.
+        Runs prompt evolution (A/B test evaluation + promotion),
+        pattern extraction, and self-consumption based on the
+        decided actions.
         """
         actions = decision
         results: dict[str, Any] = {}
@@ -819,6 +865,53 @@ class NanoClaw(ClawCycle):
             except Exception as e:
                 results["patterns_extracted"] = f"failed: {e}"
                 logger.warning("NanoClaw pattern extraction failed: %s", e)
+
+        if "self_consume" in actions and self.ctx.self_consumer is not None:
+            try:
+                sc_report = await self.ctx.self_consumer.run_full_consumption(
+                    self.project_id
+                )
+                results["self_consumption"] = {
+                    "patterns_found": sc_report.patterns_found,
+                    "patterns_stored": sc_report.patterns_stored,
+                    "blocked_dedup": sc_report.patterns_blocked_dedup,
+                    "blocked_generation": sc_report.patterns_blocked_generation,
+                    "analysis_types": sc_report.analysis_types,
+                }
+                logger.info(
+                    "NanoClaw self-consumption: found=%d, stored=%d",
+                    sc_report.patterns_found, sc_report.patterns_stored,
+                )
+            except Exception as e:
+                results["self_consumption"] = f"failed: {e}"
+                logger.warning("NanoClaw self-consumption failed: %s", e)
+
+        # Capability enrichment sweep: find unenriched methodologies and assimilate
+        if "enrich_capabilities" in actions and self.ctx.assimilation_engine is not None:
+            try:
+                self.ctx.assimilation_engine.reset_cycle_counter()
+                unenriched = await self.ctx.repository.get_methodologies_without_capability_data(
+                    limit=5
+                )
+                enriched_count = 0
+                for meth in unenriched:
+                    try:
+                        result_info = await self.ctx.assimilation_engine.assimilate(meth.id)
+                        if result_info.get("enriched"):
+                            enriched_count += 1
+                    except Exception as e:
+                        logger.debug("Enrichment failed for %s: %s", meth.id, e)
+                results["capability_enrichment"] = {
+                    "unenriched_found": len(unenriched),
+                    "enriched": enriched_count,
+                }
+                logger.info(
+                    "NanoClaw capability enrichment: %d/%d enriched",
+                    enriched_count, len(unenriched),
+                )
+            except Exception as e:
+                results["capability_enrichment"] = f"failed: {e}"
+                logger.warning("NanoClaw capability enrichment failed: %s", e)
 
         return results
 

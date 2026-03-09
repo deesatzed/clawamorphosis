@@ -32,12 +32,16 @@ from claw.memory.semantic import SemanticMemory
 from claw.miner import (
     MiningFinding,
     MiningReport,
+    RepoCandidate,
     RepoMiner,
     RepoMiningResult,
     _MAX_FINDINGS_PER_REPO,
     _SKIP_DIRS,
     _VALID_CATEGORIES,
+    _canonicalize_name,
     _category_to_agent,
+    _collect_repo_metadata,
+    _dedup_iterations,
     _discover_repos,
     _relevance_to_priority,
     parse_findings,
@@ -438,8 +442,8 @@ class TestDiscoverRepos:
         (tmp_path / ".git").mkdir()
         repos = _discover_repos(tmp_path)
         assert len(repos) == 1
-        assert repos[0][0] == tmp_path
-        assert repos[0][1] == tmp_path.name
+        assert repos[0].path == tmp_path
+        assert repos[0].name == tmp_path.name
 
     def test_finds_repos_one_level_deep(self, tmp_path):
         """Repos at immediate children level are discovered."""
@@ -452,7 +456,7 @@ class TestDiscoverRepos:
         (repo_b / ".git").mkdir()
 
         repos = _discover_repos(tmp_path)
-        names = {r[1] for r in repos}
+        names = {r.name for r in repos}
         assert "repo-a" in names
         assert "repo-b" in names
 
@@ -465,7 +469,7 @@ class TestDiscoverRepos:
         (project / ".git").mkdir()
 
         repos = _discover_repos(tmp_path)
-        names = {r[1] for r in repos}
+        names = {r.name for r in repos}
         assert "my-project" in names
 
     def test_skips_hidden_directories(self, tmp_path):
@@ -479,7 +483,7 @@ class TestDiscoverRepos:
         (visible / ".git").mkdir()
 
         repos = _discover_repos(tmp_path)
-        names = {r[1] for r in repos}
+        names = {r.name for r in repos}
         assert "visible-repo" in names
         assert ".hidden-repo" not in names
 
@@ -499,9 +503,80 @@ class TestDiscoverRepos:
         (real / ".git").mkdir()
 
         repos = _discover_repos(tmp_path)
-        names = {r[1] for r in repos}
+        names = {r.name for r in repos}
         assert "real-repo" in names
         assert "node_modules" not in names
+
+    def test_finds_repos_at_depth_4(self, tmp_path):
+        """Repos nested 4 levels deep are discovered with default depth."""
+        deep = tmp_path / "org" / "team" / "category" / "my-deep-repo"
+        deep.mkdir(parents=True)
+        (deep / ".git").mkdir()
+
+        repos = _discover_repos(tmp_path)
+        names = {r.name for r in repos}
+        assert "my-deep-repo" in names
+
+    def test_respects_max_depth(self, tmp_path):
+        """Repos beyond max_depth are not discovered.
+
+        BFS depth counting: base=0, a=1, b=2, deep-repo=3.
+        max_depth controls how deep we descend into non-repo dirs.
+        To discover depth=3, we need max_depth >= 3 so we descend
+        into b (depth=2, which is < 3) and find deep-repo at depth 3.
+        """
+        # a/b/deep-repo = depth 3 from base
+        deep = tmp_path / "a" / "b" / "deep-repo"
+        deep.mkdir(parents=True)
+        (deep / ".git").mkdir()
+
+        # depth=1 should miss repos at depth 3
+        repos = _discover_repos(tmp_path, max_depth=1)
+        names = {r.name for r in repos}
+        assert "deep-repo" not in names
+
+        # depth=3 should find it
+        repos = _discover_repos(tmp_path, max_depth=3)
+        names = {r.name for r in repos}
+        assert "deep-repo" in names
+
+    def test_collects_file_count_metadata(self, tmp_path):
+        """Discovered repos have file_count metadata from source files."""
+        repo = tmp_path / "my-repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        (repo / "main.py").write_text("x = 1", encoding="utf-8")
+        (repo / "utils.py").write_text("y = 2", encoding="utf-8")
+        (repo / "data.bin").write_bytes(b"\x00")  # not a code file
+
+        repos = _discover_repos(tmp_path)
+        assert len(repos) == 1
+        assert repos[0].file_count == 2  # only .py files counted
+
+    def test_sets_canonical_name(self, tmp_path):
+        """Discovered repos have canonical_name set."""
+        repo = tmp_path / "my-project-v3"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+
+        repos = _discover_repos(tmp_path)
+        assert len(repos) == 1
+        assert repos[0].canonical_name == "my-project"
+
+    def test_does_not_descend_into_repos(self, tmp_path):
+        """Once .git is found, don't look for nested repos inside."""
+        outer = tmp_path / "outer"
+        outer.mkdir()
+        (outer / ".git").mkdir()
+
+        inner = outer / "vendor" / "inner"
+        inner.mkdir(parents=True)
+        (inner / ".git").mkdir()
+
+        repos = _discover_repos(tmp_path)
+        names = {r.name for r in repos}
+        assert "outer" in names
+        assert "inner" not in names
 
 
 # ===========================================================================
@@ -889,3 +964,249 @@ class TestCLIRegistration:
             for cmd in app.registered_commands
         ]
         assert "mine" in command_names
+
+
+# ===========================================================================
+# 10. _canonicalize_name()
+# ===========================================================================
+
+class TestCanonicalizeName:
+    """Tests for _canonicalize_name() — version/variant suffix stripping."""
+
+    def test_strips_version_suffix(self):
+        """Strips -v2, -v3, _v10 etc."""
+        assert _canonicalize_name("ace-forecaster-v3") == "ace-forecaster"
+        assert _canonicalize_name("project_v2") == "project"
+        assert _canonicalize_name("tool-v10") == "tool"
+
+    def test_strips_common_suffixes(self):
+        """Strips -final, -latest, -backup, -copy, -wip, -old, -new, -orig."""
+        assert _canonicalize_name("project-final") == "project"
+        assert _canonicalize_name("project-latest") == "project"
+        assert _canonicalize_name("project-backup") == "project"
+        assert _canonicalize_name("project-copy") == "project"
+        assert _canonicalize_name("project-wip") == "project"
+        assert _canonicalize_name("project-old") == "project"
+        assert _canonicalize_name("project-new") == "project"
+        assert _canonicalize_name("project-orig") == "project"
+
+    def test_strips_env_suffixes(self):
+        """Strips -dev, -test, -staging, -prod."""
+        assert _canonicalize_name("api-dev") == "api"
+        assert _canonicalize_name("api-test") == "api"
+        assert _canonicalize_name("api-staging") == "api"
+        assert _canonicalize_name("api-prod") == "api"
+
+    def test_strips_trailing_digits(self):
+        """Strips bare trailing digits after dash: -2, -3, etc."""
+        assert _canonicalize_name("project-2") == "project"
+        assert _canonicalize_name("tool-42") == "tool"
+
+    def test_iterative_stripping(self):
+        """Strips multiple suffixes iteratively."""
+        assert _canonicalize_name("tool-dev-v2") == "tool"
+        assert _canonicalize_name("project-old-backup") == "project"
+
+    def test_preserves_meaningful_names(self):
+        """Doesn't strip parts that are part of the project name."""
+        assert _canonicalize_name("grokflow-cli") == "grokflow-cli"
+        assert _canonicalize_name("ace-forecaster") == "ace-forecaster"
+        assert _canonicalize_name("my-awesome-project") == "my-awesome-project"
+
+    def test_lowercases(self):
+        """Names are lowercased."""
+        assert _canonicalize_name("MyProject-V2") == "myproject"
+
+    def test_underscore_separator(self):
+        """Works with underscore separator too."""
+        assert _canonicalize_name("project_final") == "project"
+        assert _canonicalize_name("tool_backup") == "tool"
+
+    def test_empty_and_simple(self):
+        """Handles edge cases."""
+        assert _canonicalize_name("x") == "x"
+        assert _canonicalize_name("project") == "project"
+
+
+# ===========================================================================
+# 11. _dedup_iterations()
+# ===========================================================================
+
+class TestDedupIterations:
+    """Tests for _dedup_iterations() — picking best version per canonical name."""
+
+    def _make_candidate(self, name: str, **kwargs) -> RepoCandidate:
+        """Helper to create a RepoCandidate with defaults."""
+        from pathlib import Path
+        return RepoCandidate(
+            path=Path(f"/repos/{name}"),
+            name=name,
+            canonical_name=_canonicalize_name(name),
+            depth=kwargs.get("depth", 1),
+            file_count=kwargs.get("file_count", 5),
+            last_commit_ts=kwargs.get("last_commit_ts", 1000.0),
+            total_bytes=kwargs.get("total_bytes", 5000),
+        )
+
+    def test_single_repo_passes_through(self):
+        """Single repo with unique canonical name is always selected."""
+        candidates = [self._make_candidate("my-project")]
+        selected, skipped = _dedup_iterations(candidates)
+        assert len(selected) == 1
+        assert len(skipped) == 0
+        assert selected[0].name == "my-project"
+
+    def test_dedup_picks_newest(self):
+        """When multiple iterations exist, picks the one with latest commit."""
+        candidates = [
+            self._make_candidate("project-v1", last_commit_ts=1000.0),
+            self._make_candidate("project-v2", last_commit_ts=2000.0),
+            self._make_candidate("project-v3", last_commit_ts=3000.0),
+        ]
+        selected, skipped = _dedup_iterations(candidates)
+        assert len(selected) == 1
+        assert selected[0].name == "project-v3"
+        assert len(skipped) == 2
+
+    def test_dedup_uses_file_count_tiebreaker(self):
+        """When timestamps are equal, picks the one with most files."""
+        candidates = [
+            self._make_candidate("project-v1", last_commit_ts=1000.0, file_count=5),
+            self._make_candidate("project-v2", last_commit_ts=1000.0, file_count=20),
+        ]
+        selected, skipped = _dedup_iterations(candidates)
+        assert len(selected) == 1
+        assert selected[0].name == "project-v2"
+
+    def test_dedup_uses_total_bytes_tiebreaker(self):
+        """When timestamp and file_count are equal, picks largest."""
+        candidates = [
+            self._make_candidate("project-v1", last_commit_ts=1000.0, file_count=5, total_bytes=1000),
+            self._make_candidate("project-v2", last_commit_ts=1000.0, file_count=5, total_bytes=5000),
+        ]
+        selected, skipped = _dedup_iterations(candidates)
+        assert len(selected) == 1
+        assert selected[0].name == "project-v2"
+
+    def test_different_canonical_names_all_selected(self):
+        """Repos with different canonical names are all selected."""
+        candidates = [
+            self._make_candidate("project-a"),
+            self._make_candidate("project-b"),
+            self._make_candidate("tool-x"),
+        ]
+        selected, skipped = _dedup_iterations(candidates)
+        assert len(selected) == 3
+        assert len(skipped) == 0
+
+    def test_skipped_includes_reason(self):
+        """Skipped entries include the superseding repo in the reason."""
+        candidates = [
+            self._make_candidate("project-v1", last_commit_ts=1000.0),
+            self._make_candidate("project-v2", last_commit_ts=2000.0),
+        ]
+        selected, skipped = _dedup_iterations(candidates)
+        assert len(skipped) == 1
+        reason = skipped[0][1]
+        assert "superseded by" in reason
+        assert "project-v2" in reason
+
+    def test_mixed_groups(self):
+        """Mix of unique repos and iteration groups."""
+        candidates = [
+            self._make_candidate("alpha"),               # unique
+            self._make_candidate("beta-v1", last_commit_ts=1000.0),
+            self._make_candidate("beta-v2", last_commit_ts=2000.0),
+            self._make_candidate("gamma"),               # unique
+            self._make_candidate("delta-old", last_commit_ts=500.0),
+            self._make_candidate("delta-new", last_commit_ts=3000.0),
+        ]
+        selected, skipped = _dedup_iterations(candidates)
+        assert len(selected) == 4  # alpha, beta-v2, gamma, delta-new
+        assert len(skipped) == 2   # beta-v1, delta-old
+        selected_names = {c.name for c in selected}
+        assert "alpha" in selected_names
+        assert "beta-v2" in selected_names
+        assert "gamma" in selected_names
+        assert "delta-new" in selected_names
+
+
+# ===========================================================================
+# 12. _collect_repo_metadata()
+# ===========================================================================
+
+class TestCollectRepoMetadata:
+    """Tests for _collect_repo_metadata() — lightweight metadata collection."""
+
+    def test_counts_source_files(self, tmp_path):
+        """Counts files matching _CODE_EXTENSIONS in top level."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
+        (tmp_path / "utils.py").write_text("y = 2", encoding="utf-8")
+        (tmp_path / "data.bin").write_bytes(b"\x00")
+
+        file_count, _, total_bytes = _collect_repo_metadata(tmp_path)
+        assert file_count >= 2  # at least top-level .py files
+
+    def test_includes_subdirectory_files(self, tmp_path):
+        """Counts files in immediate subdirectories too."""
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "app.py").write_text("pass", encoding="utf-8")
+        (src / "lib.py").write_text("pass", encoding="utf-8")
+
+        file_count, _, _ = _collect_repo_metadata(tmp_path)
+        assert file_count >= 2
+
+    def test_uses_git_mtime_for_timestamp(self, tmp_path):
+        """Uses .git directory mtime as last_commit_ts."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/main", encoding="utf-8")
+
+        _, last_commit_ts, _ = _collect_repo_metadata(tmp_path)
+        assert last_commit_ts > 0
+
+    def test_handles_no_git_dir(self, tmp_path):
+        """Returns 0 timestamp when no .git directory."""
+        (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
+        _, last_commit_ts, _ = _collect_repo_metadata(tmp_path)
+        assert last_commit_ts == 0.0
+
+
+# ===========================================================================
+# 13. RepoCandidate dataclass
+# ===========================================================================
+
+class TestRepoCandidate:
+    """Tests for RepoCandidate dataclass."""
+
+    def test_defaults(self):
+        """RepoCandidate has correct defaults."""
+        from pathlib import Path
+        c = RepoCandidate(
+            path=Path("/repos/test"),
+            name="test",
+            canonical_name="test",
+            depth=1,
+        )
+        assert c.file_count == 0
+        assert c.last_commit_ts == 0.0
+        assert c.total_bytes == 0
+
+    def test_custom_fields(self):
+        """RepoCandidate accepts custom values."""
+        from pathlib import Path
+        c = RepoCandidate(
+            path=Path("/repos/project-v2"),
+            name="project-v2",
+            canonical_name="project",
+            depth=3,
+            file_count=42,
+            last_commit_ts=1709900000.0,
+            total_bytes=150000,
+        )
+        assert c.canonical_name == "project"
+        assert c.file_count == 42
+        assert c.depth == 3

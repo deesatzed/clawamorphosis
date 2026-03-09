@@ -20,6 +20,7 @@ from claw.core.models import (
     Methodology,
     PeerReview,
     Project,
+    SynergyExploration,
     Task,
     TaskStatus,
     TokenCostRecord,
@@ -328,8 +329,8 @@ class Repository:
                (id, problem_description, solution_code, methodology_notes,
                 source_task_id, tags, language, scope, methodology_type, files_affected,
                 lifecycle_state, generation, fitness_vector, parent_ids, superseded_by,
-                prism_data)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                prism_data, capability_data, novelty_score, potential_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 methodology.id,
                 methodology.problem_description,
@@ -347,6 +348,9 @@ class Repository:
                 json.dumps(methodology.parent_ids),
                 methodology.superseded_by,
                 json.dumps(methodology.prism_data) if methodology.prism_data else None,
+                json.dumps(methodology.capability_data) if methodology.capability_data else None,
+                methodology.novelty_score,
+                methodology.potential_score,
             ],
         )
 
@@ -486,6 +490,130 @@ class Repository:
         row = await self.engine.fetch_one("SELECT COUNT(*) as cnt FROM methodologies")
         return row["cnt"] if row else 0
 
+    async def count_active_methodologies(self) -> int:
+        """Count non-dead methodologies."""
+        row = await self.engine.fetch_one(
+            "SELECT COUNT(*) as cnt FROM methodologies WHERE lifecycle_state != 'dead'"
+        )
+        return int(row["cnt"]) if row else 0
+
+    async def count_methodologies_by_state(self) -> dict[str, int]:
+        """Count methodologies grouped by lifecycle state."""
+        rows = await self.engine.fetch_all(
+            "SELECT lifecycle_state, COUNT(*) as cnt FROM methodologies GROUP BY lifecycle_state"
+        )
+        return {str(r["lifecycle_state"]): int(r["cnt"]) for r in rows}
+
+    async def get_dead_methodologies(self, limit: int = 100) -> list[Methodology]:
+        """Get dead methodologies for garbage collection."""
+        rows = await self.engine.fetch_all(
+            "SELECT * FROM methodologies WHERE lifecycle_state = 'dead' LIMIT ?",
+            [limit],
+        )
+        return [_row_to_methodology(r) for r in rows]
+
+    async def get_lowest_fitness_methodologies(
+        self, states: list[str], limit: int = 50
+    ) -> list[Methodology]:
+        """Get methodologies with lowest fitness in given states, ordered for culling."""
+        placeholders = ",".join("?" for _ in states)
+        rows = await self.engine.fetch_all(
+            f"""SELECT * FROM methodologies
+                WHERE lifecycle_state IN ({placeholders})
+                ORDER BY
+                    CASE lifecycle_state
+                        WHEN 'dead' THEN 0
+                        WHEN 'dormant' THEN 1
+                        WHEN 'declining' THEN 2
+                        WHEN 'embryonic' THEN 3
+                        WHEN 'viable' THEN 4
+                        WHEN 'thriving' THEN 5
+                    END ASC,
+                    json_extract(fitness_vector, '$.total') ASC
+                LIMIT ?""",
+            [*states, limit],
+        )
+        return [_row_to_methodology(r) for r in rows]
+
+    async def delete_methodology(self, methodology_id: str) -> bool:
+        """Delete a methodology and its associated FTS5, embedding, and synergy entries."""
+        existing = await self.get_methodology(methodology_id)
+        if existing is None:
+            return False
+
+        await self.engine.execute(
+            "DELETE FROM methodology_embeddings WHERE methodology_id = ?",
+            [methodology_id],
+        )
+        await self.engine.execute(
+            "DELETE FROM methodology_fts WHERE methodology_id = ?",
+            [methodology_id],
+        )
+        await self.engine.execute(
+            "DELETE FROM methodology_links WHERE source_id = ? OR target_id = ?",
+            [methodology_id, methodology_id],
+        )
+        # Mark synergy explorations as stale rather than deleting
+        await self.engine.execute(
+            """UPDATE synergy_exploration_log SET result = 'stale'
+               WHERE cap_a_id = ? OR cap_b_id = ?""",
+            [methodology_id, methodology_id],
+        )
+        await self.engine.execute(
+            "DELETE FROM methodologies WHERE id = ?",
+            [methodology_id],
+        )
+        return True
+
+    async def get_db_size_bytes(self) -> int:
+        """Get the SQLite database file size in bytes."""
+        row = await self.engine.fetch_one(
+            "SELECT page_count * page_size as size FROM pragma_page_count, pragma_page_size"
+        )
+        return int(row["size"]) if row else 0
+
+    async def get_methodologies_by_tag(self, tag: str, limit: int = 50) -> list[Methodology]:
+        """Get methodologies containing a specific tag."""
+        rows = await self.engine.fetch_all(
+            "SELECT * FROM methodologies WHERE tags LIKE ? LIMIT ?",
+            [f'%"{tag}"%', limit],
+        )
+        return [_row_to_methodology(r) for r in rows]
+
+    async def log_governance_action(
+        self,
+        action_type: str,
+        methodology_id: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Log a governance action for audit trail."""
+        action_id = str(uuid.uuid4())
+        await self.engine.execute(
+            """INSERT INTO governance_log (id, action_type, methodology_id, details)
+               VALUES (?, ?, ?, ?)""",
+            [action_id, action_type, methodology_id, json.dumps(details or {})],
+        )
+        return action_id
+
+    async def count_episodes(self) -> int:
+        """Count total episodes."""
+        row = await self.engine.fetch_one("SELECT COUNT(*) as cnt FROM episodes")
+        return int(row["cnt"]) if row else 0
+
+    async def delete_old_episodes(self, before_date: str) -> int:
+        """Delete episodes older than the given ISO date. Returns count deleted."""
+        row = await self.engine.fetch_one(
+            "SELECT COUNT(*) as cnt FROM episodes WHERE created_at < ?",
+            [before_date],
+        )
+        count = int(row["cnt"]) if row else 0
+        if count > 0:
+            await self.engine.execute(
+                "DELETE FROM episodes WHERE created_at < ?",
+                [before_date],
+            )
+        return count
+
     # -------------------------------------------------------------------
     # Methodology Links (Stigmergic co-retrieval)
     # -------------------------------------------------------------------
@@ -509,6 +637,339 @@ class Repository:
             [methodology_id, methodology_id],
         )
         return [dict(r) for r in rows]
+
+    async def get_methodology_links_by_type(
+        self, methodology_id: str, link_type: str
+    ) -> list[dict[str, Any]]:
+        """Get links of a specific type for a methodology."""
+        rows = await self.engine.fetch_all(
+            """SELECT * FROM methodology_links
+               WHERE (source_id = ? OR target_id = ?) AND link_type = ?""",
+            [methodology_id, methodology_id, link_type],
+        )
+        return [dict(r) for r in rows]
+
+    # -------------------------------------------------------------------
+    # Capability Data
+    # -------------------------------------------------------------------
+
+    async def update_methodology_capability_data(
+        self, methodology_id: str, capability_data: dict
+    ) -> None:
+        """Store or replace structured capability_data for a methodology."""
+        await self.engine.execute(
+            "UPDATE methodologies SET capability_data = ? WHERE id = ?",
+            [json.dumps(capability_data), methodology_id],
+        )
+
+    async def get_methodologies_with_capabilities(self, limit: int = 100) -> list[Methodology]:
+        """Get methodologies that have capability_data populated."""
+        rows = await self.engine.fetch_all(
+            """SELECT * FROM methodologies
+               WHERE capability_data IS NOT NULL AND lifecycle_state != 'dead'
+               LIMIT ?""",
+            [limit],
+        )
+        return [_row_to_methodology(r) for r in rows]
+
+    async def get_methodologies_without_capability_data(self, limit: int = 50) -> list[Methodology]:
+        """Get methodologies missing capability_data for enrichment."""
+        rows = await self.engine.fetch_all(
+            """SELECT * FROM methodologies
+               WHERE capability_data IS NULL AND lifecycle_state != 'dead'
+               ORDER BY created_at ASC
+               LIMIT ?""",
+            [limit],
+        )
+        return [_row_to_methodology(r) for r in rows]
+
+    # -------------------------------------------------------------------
+    # Novelty Scoring
+    # -------------------------------------------------------------------
+
+    async def update_methodology_novelty_scores(
+        self, methodology_id: str, novelty: float, potential: float
+    ) -> None:
+        """Persist novelty and potential scores for a methodology."""
+        await self.engine.execute(
+            "UPDATE methodologies SET novelty_score = ?, potential_score = ? WHERE id = ?",
+            [novelty, potential, methodology_id],
+        )
+
+    async def get_most_novel_methodologies(
+        self, limit: int = 10, min_novelty: float = 0.0
+    ) -> list[Methodology]:
+        """Get methodologies ordered by novelty_score DESC."""
+        rows = await self.engine.fetch_all(
+            """SELECT * FROM methodologies
+               WHERE novelty_score IS NOT NULL AND novelty_score >= ?
+                 AND lifecycle_state != 'dead'
+               ORDER BY novelty_score DESC
+               LIMIT ?""",
+            [min_novelty, limit],
+        )
+        return [_row_to_methodology(r) for r in rows]
+
+    async def get_high_potential_methodologies(
+        self, limit: int = 10, min_potential: float = 0.0
+    ) -> list[Methodology]:
+        """Get methodologies ordered by potential_score DESC."""
+        rows = await self.engine.fetch_all(
+            """SELECT * FROM methodologies
+               WHERE potential_score IS NOT NULL AND potential_score >= ?
+                 AND lifecycle_state != 'dead'
+               ORDER BY potential_score DESC
+               LIMIT ?""",
+            [min_potential, limit],
+        )
+        return [_row_to_methodology(r) for r in rows]
+
+    async def get_embedding_centroid(self) -> list[float]:
+        """Compute mean embedding vector from all methodology_embeddings.
+
+        Returns a 384-dimensional centroid vector, or empty list if no embeddings.
+        """
+        rows = await self.engine.fetch_all(
+            "SELECT embedding FROM methodology_embeddings"
+        )
+        if not rows:
+            return []
+
+        dim = 384
+        centroid = [0.0] * dim
+        count = 0
+        for row in rows:
+            raw = row["embedding"]
+            if raw is None:
+                continue
+            vec = list(struct.unpack(f"<{dim}f", raw))
+            for i in range(dim):
+                centroid[i] += vec[i]
+            count += 1
+
+        if count == 0:
+            return []
+        return [c / count for c in centroid]
+
+    async def get_domain_distribution(self) -> dict[str, int]:
+        """Count occurrences of each domain tag across all capability_data.
+
+        Parses the domain list from capability_data JSON for each methodology.
+        """
+        rows = await self.engine.fetch_all(
+            """SELECT capability_data FROM methodologies
+               WHERE capability_data IS NOT NULL AND lifecycle_state != 'dead'"""
+        )
+        dist: dict[str, int] = {}
+        for row in rows:
+            raw = row["capability_data"]
+            if not raw:
+                continue
+            try:
+                cap = json.loads(raw) if isinstance(raw, str) else raw
+                for domain in cap.get("domain", []):
+                    dist[domain] = dist.get(domain, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return dist
+
+    async def get_type_distribution(self) -> dict[str, int]:
+        """Count occurrences of each capability_type across methodologies."""
+        rows = await self.engine.fetch_all(
+            """SELECT capability_data FROM methodologies
+               WHERE capability_data IS NOT NULL AND lifecycle_state != 'dead'"""
+        )
+        dist: dict[str, int] = {}
+        for row in rows:
+            raw = row["capability_data"]
+            if not raw:
+                continue
+            try:
+                cap = json.loads(raw) if isinstance(raw, str) else raw
+                ctype = cap.get("capability_type", "transformation")
+                dist[ctype] = dist.get(ctype, 0) + 1
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return dist
+
+    # -------------------------------------------------------------------
+    # Synergy Exploration Log
+    # -------------------------------------------------------------------
+
+    async def record_synergy_exploration(self, exploration: SynergyExploration) -> None:
+        """Record an explored capability pair. Canonical ordering enforced by caller."""
+        await self.engine.execute(
+            """INSERT INTO synergy_exploration_log
+               (id, cap_a_id, cap_b_id, explored_at, result,
+                synergy_score, synergy_type, edge_id, exploration_method, details)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cap_a_id, cap_b_id) DO UPDATE SET
+                   result = excluded.result,
+                   synergy_score = excluded.synergy_score,
+                   synergy_type = excluded.synergy_type,
+                   edge_id = excluded.edge_id,
+                   exploration_method = excluded.exploration_method,
+                   details = excluded.details,
+                   explored_at = excluded.explored_at""",
+            [
+                exploration.id,
+                exploration.cap_a_id,
+                exploration.cap_b_id,
+                exploration.explored_at.isoformat() if exploration.explored_at else None,
+                exploration.result,
+                exploration.synergy_score,
+                exploration.synergy_type,
+                exploration.edge_id,
+                exploration.exploration_method,
+                json.dumps(exploration.details),
+            ],
+        )
+
+    async def get_synergy_exploration(
+        self, cap_a_id: str, cap_b_id: str
+    ) -> Optional[SynergyExploration]:
+        """Get exploration record for a canonical pair (a < b alphabetically)."""
+        a, b = (cap_a_id, cap_b_id) if cap_a_id < cap_b_id else (cap_b_id, cap_a_id)
+        row = await self.engine.fetch_one(
+            "SELECT * FROM synergy_exploration_log WHERE cap_a_id = ? AND cap_b_id = ?",
+            [a, b],
+        )
+        if row is None:
+            return None
+        return _row_to_synergy_exploration(row)
+
+    async def get_unexplored_pairs(
+        self, cap_id: str, candidate_ids: list[str]
+    ) -> list[str]:
+        """Filter candidate_ids to only those NOT yet explored with cap_id."""
+        if not candidate_ids:
+            return []
+        unexplored = []
+        for cid in candidate_ids:
+            a, b = (cap_id, cid) if cap_id < cid else (cid, cap_id)
+            row = await self.engine.fetch_one(
+                "SELECT 1 FROM synergy_exploration_log WHERE cap_a_id = ? AND cap_b_id = ?",
+                [a, b],
+            )
+            if row is None:
+                unexplored.append(cid)
+        return unexplored
+
+    async def get_synergy_stats(self) -> dict[str, Any]:
+        """Get aggregate stats from the synergy exploration log."""
+        total_row = await self.engine.fetch_one(
+            "SELECT COUNT(*) as cnt FROM synergy_exploration_log"
+        )
+        total = int(total_row["cnt"]) if total_row else 0
+
+        by_result = await self.engine.fetch_all(
+            "SELECT result, COUNT(*) as cnt FROM synergy_exploration_log GROUP BY result"
+        )
+        result_counts = {str(r["result"]): int(r["cnt"]) for r in by_result}
+
+        avg_row = await self.engine.fetch_one(
+            "SELECT AVG(synergy_score) as avg_score FROM synergy_exploration_log WHERE synergy_score IS NOT NULL"
+        )
+        avg_score = float(avg_row["avg_score"]) if avg_row and avg_row["avg_score"] else 0.0
+
+        edge_row = await self.engine.fetch_one(
+            "SELECT COUNT(*) as cnt FROM methodology_links WHERE link_type != 'co_retrieval'"
+        )
+        synergy_edges = int(edge_row["cnt"]) if edge_row else 0
+
+        return {
+            "total_explored": total,
+            "by_result": result_counts,
+            "avg_synergy_score": round(avg_score, 4),
+            "synergy_edges": synergy_edges,
+        }
+
+    async def mark_stale_explorations(self, methodology_id: str) -> int:
+        """Mark explorations as stale when a methodology is deleted."""
+        rows = await self.engine.fetch_all(
+            """SELECT id FROM synergy_exploration_log
+               WHERE cap_a_id = ? OR cap_b_id = ?""",
+            [methodology_id, methodology_id],
+        )
+        count = len(rows)
+        if count > 0:
+            await self.engine.execute(
+                """UPDATE synergy_exploration_log SET result = 'stale'
+                   WHERE cap_a_id = ? OR cap_b_id = ?""",
+                [methodology_id, methodology_id],
+            )
+        return count
+
+    # -------------------------------------------------------------------
+    # Capability Graph Traversal
+    # -------------------------------------------------------------------
+
+    async def get_synergy_graph(
+        self, methodology_id: str, depth: int = 2
+    ) -> dict[str, Any]:
+        """BFS traversal of synergy edges from a starting methodology.
+
+        depth=1 means follow one hop (root + direct neighbors).
+        Returns a dict with 'nodes' (set of methodology IDs) and
+        'edges' (list of (source, target, link_type, strength) tuples).
+        """
+        visited: set[str] = set()
+        edges: list[tuple[str, str, str, float]] = []
+        current_level = {methodology_id}
+
+        for _ in range(depth + 1):
+            if not current_level:
+                break
+            next_level: set[str] = set()
+            for node_id in current_level:
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                links = await self.engine.fetch_all(
+                    """SELECT source_id, target_id, link_type, strength
+                       FROM methodology_links
+                       WHERE source_id = ? OR target_id = ?""",
+                    [node_id, node_id],
+                )
+                for link in links:
+                    src = link["source_id"]
+                    tgt = link["target_id"]
+                    edge_tuple = (src, tgt, link["link_type"], link["strength"])
+                    if edge_tuple not in edges:
+                        edges.append(edge_tuple)
+                    neighbor = tgt if src == node_id else src
+                    if neighbor not in visited:
+                        next_level.add(neighbor)
+            current_level = next_level
+
+        return {
+            "nodes": visited,
+            "edges": edges,
+        }
+
+    async def get_complementary_capabilities(
+        self, methodology_id: str
+    ) -> list[Methodology]:
+        """Follow feeds_into, enhances, and synergy edges to find complementary capabilities."""
+        complementary_ids: set[str] = set()
+        target_link_types = ("feeds_into", "enhances", "synergy")
+
+        for lt in target_link_types:
+            links = await self.engine.fetch_all(
+                """SELECT source_id, target_id FROM methodology_links
+                   WHERE (source_id = ? OR target_id = ?) AND link_type = ?""",
+                [methodology_id, methodology_id, lt],
+            )
+            for link in links:
+                neighbor = link["target_id"] if link["source_id"] == methodology_id else link["source_id"]
+                complementary_ids.add(neighbor)
+
+        results = []
+        for cid in complementary_ids:
+            meth = await self.get_methodology(cid)
+            if meth and meth.lifecycle_state != "dead":
+                results.append(meth)
+        return results
 
     # -------------------------------------------------------------------
     # Peer Reviews
@@ -826,6 +1287,9 @@ def _row_to_methodology(row: dict[str, Any]) -> Methodology:
     raw_prism = row.get("prism_data")
     prism_data = json.loads(raw_prism) if isinstance(raw_prism, str) else None
 
+    raw_cap = row.get("capability_data")
+    capability_data = json.loads(raw_cap) if isinstance(raw_cap, str) else None
+
     return Methodology(
         id=row["id"],
         problem_description=row["problem_description"],
@@ -848,6 +1312,9 @@ def _row_to_methodology(row: dict[str, Any]) -> Methodology:
         parent_ids=parents,
         superseded_by=row.get("superseded_by"),
         prism_data=prism_data,
+        capability_data=capability_data,
+        novelty_score=row.get("novelty_score"),
+        potential_score=row.get("potential_score"),
     )
 
 
@@ -874,6 +1341,24 @@ def _row_to_context_snapshot(row: dict[str, Any]) -> ContextSnapshot:
         git_ref=row["git_ref"],
         file_manifest=manifest,
         created_at=_parse_dt(row.get("created_at")),
+    )
+
+
+def _row_to_synergy_exploration(row: dict[str, Any]) -> SynergyExploration:
+    details = row.get("details", "{}")
+    if isinstance(details, str):
+        details = json.loads(details)
+    return SynergyExploration(
+        id=row["id"],
+        cap_a_id=row["cap_a_id"],
+        cap_b_id=row["cap_b_id"],
+        explored_at=_parse_dt(row.get("explored_at")),
+        result=row.get("result", "pending"),
+        synergy_score=row.get("synergy_score"),
+        synergy_type=row.get("synergy_type"),
+        edge_id=row.get("edge_id"),
+        exploration_method=row.get("exploration_method"),
+        details=details,
     )
 
 

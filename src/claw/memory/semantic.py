@@ -41,11 +41,13 @@ class SemanticMemory:
         embedding_engine: EmbeddingEngine,
         hybrid_search: HybridSearch,
         prism_engine: Any = None,
+        governance: Any = None,
     ):
         self.repository = repository
         self.embedding_engine = embedding_engine
         self.hybrid_search = hybrid_search
         self.prism_engine = prism_engine
+        self.governance = governance
 
     # Quality filter thresholds (Item 5)
     MIN_SOLUTION_LENGTH = 50
@@ -89,6 +91,20 @@ class SemanticMemory:
         except Exception as e:
             logger.warning("Embedding generation failed -- saving without vector: %s", e)
             embedding = None
+
+        # Pre-save dedup check
+        if self.governance and embedding is not None:
+            should_save, existing_id = await self.governance.check_pre_save_dedup(
+                problem_description, embedding
+            )
+            if not should_save and existing_id:
+                logger.info(
+                    "Dedup blocked: too similar to existing %s — returning existing",
+                    existing_id,
+                )
+                existing = await self.repository.get_methodology(existing_id)
+                if existing:
+                    return existing
 
         # Compute PRISM multi-scale representation if engine is available
         prism_data = None

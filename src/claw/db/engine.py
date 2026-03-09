@@ -98,17 +98,102 @@ class DatabaseEngine:
 
         Each migration checks whether the target change already exists before
         applying it, so this method is safe to call on every startup.
+        Called before initialize_schema() so existing DBs get new columns
+        before schema.sql tries to create indexes on them.
         """
-        # Migration 1: add prism_data column to methodologies
+        # Guard: skip migrations if methodologies table doesn't exist yet (fresh DB)
         row = await self.fetch_one(
-            "SELECT COUNT(*) as cnt FROM pragma_table_info('methodologies') WHERE name = 'prism_data'"
+            "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='methodologies'"
+        )
+        tables_exist = row and row["cnt"] > 0
+
+        if tables_exist:
+            # Migration 1: add prism_data column to methodologies
+            row = await self.fetch_one(
+                "SELECT COUNT(*) as cnt FROM pragma_table_info('methodologies') WHERE name = 'prism_data'"
+            )
+            if row and row["cnt"] == 0:
+                await self.conn.execute(
+                    "ALTER TABLE methodologies ADD COLUMN prism_data TEXT"
+                )
+                await self.conn.commit()
+                logger.info("Migration applied: methodologies.prism_data column added")
+
+        # Migration 2: create governance_log table (safe even on fresh DB)
+        row = await self.fetch_one(
+            "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='governance_log'"
         )
         if row and row["cnt"] == 0:
-            await self.conn.execute(
-                "ALTER TABLE methodologies ADD COLUMN prism_data TEXT"
-            )
+            await self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS governance_log (
+                    id TEXT PRIMARY KEY,
+                    action_type TEXT NOT NULL,
+                    methodology_id TEXT,
+                    details TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_governance_log_action ON governance_log(action_type);
+                CREATE INDEX IF NOT EXISTS idx_governance_log_created ON governance_log(created_at DESC);
+            """)
             await self.conn.commit()
-            logger.info("Migration applied: methodologies.prism_data column added")
+            logger.info("Migration applied: governance_log table created")
+
+        if tables_exist:
+            # Migration 3: add capability_data column to methodologies
+            row = await self.fetch_one(
+                "SELECT COUNT(*) as cnt FROM pragma_table_info('methodologies') WHERE name = 'capability_data'"
+            )
+            if row and row["cnt"] == 0:
+                await self.conn.execute(
+                    "ALTER TABLE methodologies ADD COLUMN capability_data TEXT"
+                )
+                await self.conn.commit()
+                logger.info("Migration applied: methodologies.capability_data column added")
+
+        # Migration 4: create synergy_exploration_log table (safe even on fresh DB)
+        row = await self.fetch_one(
+            "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='synergy_exploration_log'"
+        )
+        if row and row["cnt"] == 0:
+            await self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS synergy_exploration_log (
+                    id TEXT PRIMARY KEY,
+                    cap_a_id TEXT NOT NULL,
+                    cap_b_id TEXT NOT NULL,
+                    explored_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    result TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (result IN ('pending','synergy','no_match','error','stale')),
+                    synergy_score REAL,
+                    synergy_type TEXT,
+                    edge_id TEXT,
+                    exploration_method TEXT,
+                    details TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE(cap_a_id, cap_b_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_synergy_log_cap_a ON synergy_exploration_log(cap_a_id);
+                CREATE INDEX IF NOT EXISTS idx_synergy_log_cap_b ON synergy_exploration_log(cap_b_id);
+                CREATE INDEX IF NOT EXISTS idx_synergy_log_result ON synergy_exploration_log(result);
+            """)
+            await self.conn.commit()
+            logger.info("Migration applied: synergy_exploration_log table created")
+
+        if tables_exist:
+            # Migration 5: add novelty_score and potential_score columns to methodologies
+            row = await self.fetch_one(
+                "SELECT COUNT(*) as cnt FROM pragma_table_info('methodologies') WHERE name = 'novelty_score'"
+            )
+            if row and row["cnt"] == 0:
+                await self.conn.execute(
+                    "ALTER TABLE methodologies ADD COLUMN novelty_score REAL"
+                )
+                await self.conn.execute(
+                    "ALTER TABLE methodologies ADD COLUMN potential_score REAL"
+                )
+                await self.conn.executescript(
+                    "CREATE INDEX IF NOT EXISTS idx_meth_novelty ON methodologies(novelty_score DESC);"
+                )
+                await self.conn.commit()
+                logger.info("Migration applied: methodologies.novelty_score + potential_score columns added")
 
     async def execute(
         self, query: str, params: Optional[Sequence[Any]] = None

@@ -4,10 +4,13 @@ Commands:
   evaluate <repo>        — structural analysis + 18-prompt evaluation battery
   enhance <repo>         — full pipeline: evaluate -> plan -> dispatch -> verify -> learn
   fleet-enhance <dir>    — multi-repo fleet processing with ranking and budget allocation
+  mine <dir>             — mine repos for patterns (--scan-only, --depth, --dedup)
   add-goal <repo>        — manually add a task/goal for a repository
   results                — show past task results from the database
   status                 — show system status
   setup                  — interactive API key, model, and agent configuration
+  govern [action]        — memory governance: stats, sweep, gc, quota, prune
+  synergies              — capability synergy graph summary and exploration stats
 """
 
 from __future__ import annotations
@@ -1499,6 +1502,9 @@ def mine(
     max_repos: int = typer.Option(10, "--max-repos", help="Maximum number of repos to mine"),
     min_relevance: float = typer.Option(0.6, "--min-relevance", help="Minimum relevance score for task generation (0.4-1.0)"),
     tasks: bool = typer.Option(True, "--tasks/--no-tasks", help="Generate enhancement tasks from findings"),
+    depth: int = typer.Option(6, "--depth", "-d", help="Max directory depth for repo discovery"),
+    dedup: bool = typer.Option(True, "--dedup/--no-dedup", help="Dedup repo iterations by canonical name"),
+    scan_only: bool = typer.Option(False, "--scan-only", help="Preview discovered repos without mining (no LLM calls)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
 ) -> None:
@@ -1507,6 +1513,9 @@ def mine(
     Scans a directory for git repos, analyzes each via LLM to extract
     transferable patterns, stores findings in semantic memory, and
     optionally generates enhancement tasks for the target project.
+
+    Use --scan-only to preview what repos would be mined without making
+    any LLM calls. Use --no-dedup to include all iterations of each project.
     """
     _setup_logging(verbose)
 
@@ -1526,9 +1535,114 @@ def mine(
         console.print("[red]--min-relevance must be between 0.4 and 1.0[/red]")
         raise typer.Exit(1)
 
+    if depth < 1:
+        console.print("[red]--depth must be at least 1[/red]")
+        raise typer.Exit(1)
+
+    if scan_only:
+        _mine_scan_only(dir_path, depth, dedup, max_repos)
+        return
+
     asyncio.run(_mine_async(
         dir_path, target, max_repos, min_relevance, tasks, config,
+        depth, dedup,
     ))
+
+
+def _mine_scan_only(
+    dir_path: Path,
+    depth: int,
+    dedup: bool,
+    max_repos: int,
+) -> None:
+    """Preview discovered repos without mining (no LLM calls, no DB)."""
+    from datetime import datetime
+    from claw.miner import _discover_repos, _dedup_iterations
+
+    console.print(f"\n[bold]CLAW Repo Scanner (scan-only)[/bold]")
+    console.print(f"  Directory: {dir_path}")
+    console.print(f"  Depth: {depth}")
+    console.print(f"  Dedup: {dedup}")
+    console.print()
+
+    console.print("[cyan]Scanning for repos...[/cyan]")
+    candidates = _discover_repos(dir_path, max_depth=depth)
+
+    if not candidates:
+        console.print("[yellow]No git repos found.[/yellow]")
+        return
+
+    skipped: list = []
+    selected = candidates
+    if dedup:
+        selected, skipped = _dedup_iterations(candidates)
+
+    # Build discovery table
+    table = Table(title=f"Discovered Repos ({len(candidates)} total, {len(selected)} selected)")
+    table.add_column("#", justify="right", style="dim", width=4)
+    table.add_column("Name", style="cyan", max_width=30)
+    table.add_column("Canonical", style="blue", max_width=25)
+    table.add_column("Files", justify="right", style="green", width=6)
+    table.add_column("Size", justify="right", style="dim", width=8)
+    table.add_column("Last Modified", style="dim", width=18)
+    table.add_column("Depth", justify="right", style="dim", width=5)
+    table.add_column("Status", max_width=20)
+
+    skipped_names = {id(s[0]) for s in skipped}
+
+    for i, c in enumerate(candidates, 1):
+        if c.total_bytes >= 1024 * 1024:
+            size_str = f"{c.total_bytes / (1024 * 1024):.1f}MB"
+        elif c.total_bytes >= 1024:
+            size_str = f"{c.total_bytes / 1024:.0f}KB"
+        else:
+            size_str = f"{c.total_bytes}B"
+
+        if c.last_commit_ts > 0:
+            ts_str = datetime.fromtimestamp(c.last_commit_ts).strftime("%Y-%m-%d %H:%M")
+        else:
+            ts_str = "-"
+
+        if id(c) in skipped_names:
+            reason = next(r for s, r in skipped if id(s) == id(c))
+            status = f"[dim]skipped: {reason[:18]}[/dim]"
+        else:
+            status = "[green]selected[/green]"
+
+        table.add_row(
+            str(i), c.name, c.canonical_name, str(c.file_count),
+            size_str, ts_str, str(c.depth), status,
+        )
+
+    console.print(table)
+
+    # Summary
+    console.print(f"\n[bold]Summary[/bold]")
+    console.print(f"  Total discovered: {len(candidates)}")
+    console.print(f"  Selected: {len(selected)}")
+    console.print(f"  Skipped (dedup): {len(skipped)}")
+    if max_repos < len(selected):
+        console.print(f"  Will mine (--max-repos): {max_repos}")
+    else:
+        console.print(f"  Will mine: {len(selected)}")
+
+    # Show dedup groups with multiple iterations
+    if dedup and skipped:
+        from collections import Counter
+        canon_counts = Counter(c.canonical_name for c in candidates)
+        multi = {name: count for name, count in canon_counts.items() if count > 1}
+        if multi:
+            console.print(f"\n[bold]Iteration Groups ({len(multi)} with duplicates)[/bold]")
+            group_table = Table()
+            group_table.add_column("Canonical Name", style="blue", max_width=30)
+            group_table.add_column("Iterations", justify="right", style="yellow", width=10)
+            group_table.add_column("Selected", style="green", max_width=35)
+            for name, count in sorted(multi.items(), key=lambda x: -x[1])[:20]:
+                winner = next((c.name for c in selected if c.canonical_name == name), "?")
+                group_table.add_row(name, str(count), winner)
+            console.print(group_table)
+
+    console.print(f"\n[dim]Remove --scan-only to mine these repos.[/dim]")
 
 
 async def _mine_async(
@@ -1538,6 +1652,8 @@ async def _mine_async(
     min_relevance: float,
     generate_tasks: bool,
     config_path: Optional[str],
+    max_depth: int = 6,
+    dedup_iterations: bool = True,
 ) -> None:
     from claw.core.factory import ClawFactory
     from claw.core.models import Project
@@ -1560,6 +1676,8 @@ async def _mine_async(
         console.print(f"  Max repos: {max_repos}")
         console.print(f"  Min relevance for tasks: {min_relevance}")
         console.print(f"  Generate tasks: {generate_tasks}")
+        console.print(f"  Depth: {max_depth}")
+        console.print(f"  Dedup: {dedup_iterations}")
         console.print(f"  Database: {ctx.config.database.db_path}")
         console.print()
 
@@ -1583,6 +1701,8 @@ async def _mine_async(
             min_relevance=min_relevance,
             generate_tasks=generate_tasks,
             on_repo_complete=on_repo_complete,
+            max_depth=max_depth,
+            dedup_iterations=dedup_iterations,
         )
 
         # Display results table
@@ -1638,6 +1758,106 @@ async def _mine_async(
 
     finally:
         await ctx.close()
+
+
+@app.command()
+def govern(
+    action: str = typer.Argument(
+        "stats",
+        help="Action: stats, sweep, gc, quota, prune",
+    ),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Verbose output"),
+    config: Optional[str] = typer.Option(None, "--config", help="Path to claw.toml"),
+) -> None:
+    """Memory governance — sweep, stats, GC, quota enforcement, episode pruning.
+
+    Actions:
+      stats  — Show methodology counts by state, DB size, quota usage
+      sweep  — Run a full governance sweep (lifecycle + GC + quota + prune)
+      gc     — Garbage-collect dead methodologies only
+      quota  — Enforce methodology quota only
+      prune  — Prune old episodes only
+    """
+    _setup_logging(verbose)
+    asyncio.run(_govern_async(action, config))
+
+
+async def _govern_async(action: str, config_path: Optional[str]) -> None:
+    """Run governance action."""
+    from claw.core.config import load_config
+    from claw.db.engine import DatabaseEngine
+    from claw.db.repository import Repository
+    from claw.memory.governance import MemoryGovernor
+
+    cfg = load_config(Path(config_path) if config_path else None)
+
+    engine = DatabaseEngine(cfg.database)
+    await engine.connect()
+    await engine.apply_migrations()
+    await engine.initialize_schema()
+    repository = Repository(engine)
+
+    governor = MemoryGovernor(repository=repository, config=cfg.governance)
+
+    try:
+        if action == "stats":
+            stats = await governor.get_storage_stats()
+            console.print("\n[bold]Memory Governance Stats[/bold]")
+            console.print(f"  Total methodologies:  {stats.total_methodologies}")
+            console.print(f"  Active (non-dead):    {stats.active_methodologies}")
+
+            table = Table(title="Methodologies by State")
+            table.add_column("State", style="bold")
+            table.add_column("Count", justify="right")
+            for state, count in sorted(stats.state_counts.items()):
+                style = {
+                    "thriving": "green",
+                    "viable": "cyan",
+                    "embryonic": "yellow",
+                    "declining": "magenta",
+                    "dormant": "dim",
+                    "dead": "red",
+                }.get(state, "")
+                table.add_row(f"[{style}]{state}[/{style}]" if style else state, str(count))
+            console.print(table)
+
+            quota = cfg.governance.max_methodologies
+            usage_pct = (stats.active_methodologies / quota * 100) if quota else 0
+            bar_style = "green" if usage_pct < 80 else ("yellow" if usage_pct < 100 else "red")
+            console.print(f"  Quota: {stats.active_methodologies}/{quota} ({usage_pct:.1f}%) [{bar_style}]")
+            console.print(f"  DB size: {stats.db_size_bytes / 1024 / 1024:.2f} MB")
+            console.print(f"  Episodes: {stats.episode_count}")
+
+        elif action == "sweep":
+            console.print("[bold]Running full governance sweep...[/bold]")
+            report = await governor.run_full_sweep()
+            console.print(f"  Dead collected:    {report.dead_collected}")
+            console.print(f"  Quota culled:      {report.quota_culled}")
+            console.print(f"  Episodes pruned:   {report.episodes_pruned}")
+            console.print(f"  Lifecycle swept:   {report.lifecycle_swept}")
+            console.print("[green]Sweep complete.[/green]")
+
+        elif action == "gc":
+            console.print("[bold]Garbage-collecting dead methodologies...[/bold]")
+            count = await governor.garbage_collect_dead()
+            console.print(f"  Removed: {count} dead methodologies")
+
+        elif action == "quota":
+            console.print("[bold]Enforcing methodology quota...[/bold]")
+            count = await governor.enforce_methodology_quota()
+            console.print(f"  Culled: {count} methodologies to stay within quota")
+
+        elif action == "prune":
+            console.print("[bold]Pruning old episodes...[/bold]")
+            count = await governor._prune_episodes()
+            console.print(f"  Pruned: {count} episodes older than {cfg.governance.episodic_retention_days} days")
+
+        else:
+            console.print(f"[red]Unknown action: {action}[/red]")
+            console.print("[dim]Valid actions: stats, sweep, gc, quota, prune[/dim]")
+
+    finally:
+        await engine.close()
 
 
 @app.command()
@@ -1827,6 +2047,74 @@ def setup(
     console.print(f"  claw add-goal <repo>     — add a custom task")
     console.print(f"  claw enhance <repo>      — run the full pipeline")
     console.print(f"  claw fleet-enhance <dir> — process a fleet of repos")
+
+
+@app.command()
+def synergies(
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Show detailed edge list"),
+    config: Optional[str] = typer.Option(None, "--config", help="Path to claw.toml"),
+):
+    """Show capability synergy graph summary, exploration stats, and recent discoveries."""
+    _setup_logging(verbose)
+    asyncio.run(_synergies_async(verbose))
+
+
+async def _synergies_async(verbose: bool) -> None:
+    """Display synergy stats and graph summary."""
+    from rich.panel import Panel
+    from claw.core.config import DatabaseConfig, load_config
+    from claw.db.engine import DatabaseEngine
+    from claw.db.repository import Repository
+
+    config = load_config()
+    engine = DatabaseEngine(config.database)
+    await engine.connect()
+    await engine.apply_migrations()
+    await engine.initialize_schema()
+    repository = Repository(engine)
+
+    try:
+        # Synergy exploration stats
+        stats = await repository.get_synergy_stats()
+        console.print(Panel.fit(
+            "[bold cyan]Capability Synergy Graph[/bold cyan]",
+            border_style="cyan",
+        ))
+
+        table = Table(title="Exploration Stats")
+        table.add_column("Metric", style="bold")
+        table.add_column("Value", justify="right")
+        table.add_row("Total explored pairs", str(stats["total_explored"]))
+        for result_type, count in stats.get("by_result", {}).items():
+            table.add_row(f"  {result_type}", str(count))
+        table.add_row("Avg synergy score", f"{stats['avg_synergy_score']:.4f}")
+        table.add_row("Synergy edges", str(stats["synergy_edges"]))
+        console.print(table)
+
+        # Capabilities with data
+        with_caps = await repository.get_methodologies_with_capabilities()
+        without_caps = await repository.get_methodologies_without_capability_data()
+        console.print(f"\nCapabilities enriched: [bold]{len(with_caps)}[/bold]")
+        console.print(f"Capabilities unenriched: [bold]{len(without_caps)}[/bold]")
+
+        if verbose and with_caps:
+            cap_table = Table(title="Enriched Capabilities")
+            cap_table.add_column("ID", width=8)
+            cap_table.add_column("Problem", width=40)
+            cap_table.add_column("Type", width=15)
+            cap_table.add_column("Domain")
+            for m in with_caps[:20]:
+                cd = m.capability_data or {}
+                cap_table.add_row(
+                    m.id[:8],
+                    m.problem_description[:40],
+                    cd.get("capability_type", "?"),
+                    ", ".join(cd.get("domain", [])[:3]),
+                )
+            console.print(cap_table)
+
+    finally:
+        await engine.close()
 
 
 @app.command(name="prism-demo")
