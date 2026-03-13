@@ -40,3 +40,18 @@ Thumbs.db
 
 # Token cost logs
 *.jsonl
+
+# Local working notes and agent instruction files
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+.grok/
+BLOG_DRAFT.md
+COVERAGE_ACTION_PLAN.md
+clawpre.md
+HANDOFF*.md
+ASSESSMENT*.md
+MITIGATION*.md
+INTEGRATION_*.md
+AGONY_DOSSIER.md
+*-this-session-*.txt
