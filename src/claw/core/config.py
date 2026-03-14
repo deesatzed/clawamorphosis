@@ -40,6 +40,9 @@ class LLMConfig(BaseModel):
 class EmbeddingsConfig(BaseModel):
     model: str = "all-MiniLM-L6-v2"
     dimension: int = 384
+    api_key_env: str = "GOOGLE_API_KEY"
+    task_type: Optional[str] = "RETRIEVAL_DOCUMENT"
+    required_model: Optional[str] = None
 
 
 class MemoryConfig(BaseModel):

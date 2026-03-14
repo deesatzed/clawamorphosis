@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Optional
 
@@ -91,6 +92,27 @@ PLACEHOLDER_PATTERNS = [
     r'\.\.\.\s*$',               # Ellipsis as implementation
     r'#\s*(?:implement|placeholder|stub)',
 ]
+
+ALLOWED_ACCEPTANCE_COMMANDS = {
+    "cargo",
+    "go",
+    "make",
+    "mypy",
+    "node",
+    "npm",
+    "npx",
+    "pnpm",
+    "poetry",
+    "pytest",
+    "python",
+    "python3",
+    "ruff",
+    "tox",
+    "uv",
+    "yarn",
+}
+
+BLOCKED_SHELL_PATTERNS = ("&&", "||", "|", ";", "`", "$(")
 
 
 class Verifier:
@@ -199,6 +221,24 @@ class Verifier:
             except Exception as e:
                 logger.warning("Test execution failed: %s", e)
                 all_recommendations.append(f"Test execution could not be completed: {e}")
+
+        # Run explicit acceptance checks (if provided) after tests pass.
+        acceptance_checks = list(task_context.task.acceptance_checks)
+        if not acceptance_checks and task_context.action_template is not None:
+            acceptance_checks = list(task_context.action_template.acceptance_checks)
+
+        if acceptance_checks and len(all_violations) == 0:
+            if not workspace_dir:
+                all_recommendations.append(
+                    "Acceptance checks were provided but workspace_dir was not set; skipped."
+                )
+            else:
+                acc_violations, acc_recommendations = await self._run_acceptance_checks(
+                    workspace_dir=workspace_dir,
+                    acceptance_checks=acceptance_checks,
+                )
+                all_violations.extend(acc_violations)
+                all_recommendations.extend(acc_recommendations)
 
         approved = len(all_violations) == 0
 
@@ -834,6 +874,104 @@ class Verifier:
         return False, (
             f"No regression detected (before: {tests_before}, after: {tests_after})."
         )
+
+    async def _run_acceptance_checks(
+        self,
+        workspace_dir: str,
+        acceptance_checks: list[str],
+    ) -> tuple[list[dict[str, str]], list[str]]:
+        """Execute allowlisted acceptance commands in the workspace."""
+        violations: list[dict[str, str]] = []
+        recommendations: list[str] = []
+
+        workspace = Path(workspace_dir)
+        if not workspace.is_dir():
+            violations.append({
+                "check": "acceptance_checks",
+                "detail": f"Workspace directory not found for acceptance checks: {workspace_dir}",
+            })
+            return violations, recommendations
+
+        for raw_command in acceptance_checks:
+            command = (raw_command or "").strip()
+            if not command:
+                continue
+
+            tokens, blocked_reason = self._validate_acceptance_command(command)
+            if blocked_reason:
+                violations.append({
+                    "check": "acceptance_checks",
+                    "detail": f"Blocked acceptance check '{command}': {blocked_reason}",
+                })
+                continue
+
+            assert tokens is not None  # For type checkers; blocked_reason handled above.
+
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *tokens,
+                    cwd=str(workspace),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.communicate()
+                    violations.append({
+                        "check": "acceptance_checks",
+                        "detail": f"Acceptance check timed out after 180s: {command}",
+                    })
+                    continue
+
+                output = (
+                    stdout.decode("utf-8", errors="replace")
+                    + stderr.decode("utf-8", errors="replace")
+                ).strip()
+                if proc.returncode != 0:
+                    violations.append({
+                        "check": "acceptance_checks",
+                        "detail": (
+                            f"Acceptance check failed (exit {proc.returncode}): {command}. "
+                            f"Output: {output[:500]}"
+                        ),
+                    })
+                else:
+                    logger.info("Acceptance check passed: %s", command)
+            except Exception as e:
+                violations.append({
+                    "check": "acceptance_checks",
+                    "detail": f"Acceptance check execution error for '{command}': {e}",
+                })
+
+        return violations, recommendations
+
+    @staticmethod
+    def _validate_acceptance_command(command: str) -> tuple[Optional[list[str]], Optional[str]]:
+        """Parse and validate a single acceptance command string."""
+        if any(pattern in command for pattern in BLOCKED_SHELL_PATTERNS):
+            return None, "shell chaining/redirection is not allowed"
+
+        try:
+            tokens = shlex.split(command)
+        except ValueError as e:
+            return None, f"could not parse command: {e}"
+
+        if not tokens:
+            return None, "empty command"
+
+        executable = Path(tokens[0]).name
+        if executable not in ALLOWED_ACCEPTANCE_COMMANDS:
+            return None, f"command '{executable}' is not allowlisted"
+
+        if executable in {"python", "python3"} and any(t in {"-c", "--command"} for t in tokens[1:]):
+            return None, "inline python execution (-c/--command) is not allowed"
+
+        if executable == "node" and any(t in {"-e", "--eval"} for t in tokens[1:]):
+            return None, "inline node execution (-e/--eval) is not allowed"
+
+        return tokens, None
 
     # ===================================================================
     # Quality scoring

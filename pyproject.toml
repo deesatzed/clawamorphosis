@@ -37,7 +37,7 @@ mcp = [
 ]
 
 [project.scripts]
-claw = "claw.cli:app_main"
+cam = "claw.cli:app_main"
 
 [build-system]
 requires = ["setuptools>=68.0"]

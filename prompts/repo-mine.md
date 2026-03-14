@@ -42,6 +42,10 @@ Return a JSON array of findings. Each finding must have these fields:
     "source_files": ["relative/path/to/key/file.py"],
     "implementation_sketch": "How this could be adapted for CLAW (2-5 sentences with specific file/class suggestions)",
     "augmentation_notes": "What CLAW currently lacks that this addresses",
+    "execution_steps": ["Optional: concrete commands to execute this pattern safely in a target repo"],
+    "acceptance_checks": ["Optional: commands that should pass after implementation"],
+    "rollback_steps": ["Optional: commands to revert safely if checks fail"],
+    "preconditions": ["Optional: required tools/files before execution"],
     "relevance_score": 0.7,
     "language": "python"
   }
@@ -58,6 +62,7 @@ Return a JSON array of findings. Each finding must have these fields:
 - Prefer patterns that are **novel or well-implemented**, not obvious boilerplate
 - Include the most relevant source files that demonstrate the pattern
 - implementation_sketch should reference specific CLAW modules where the pattern could be integrated
+- When including execution/acceptance commands, use concrete, low-risk commands (no destructive operations)
 
 ## Repository Content
 

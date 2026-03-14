@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_type TEXT,
     recommended_agent TEXT,
     assigned_agent TEXT,
+    action_template_id TEXT REFERENCES action_templates(id) ON DELETE SET NULL,
+    execution_steps TEXT NOT NULL DEFAULT '[]',       -- JSON array string
+    acceptance_checks TEXT NOT NULL DEFAULT '[]',     -- JSON array string
     context_snapshot_id TEXT,
     attempt_count INTEGER DEFAULT 0,
     escalation_count INTEGER DEFAULT 0,
@@ -35,6 +38,27 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(project_id, priority DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_action_template ON tasks(action_template_id);
+
+-- 2b. ACTION_TEMPLATES (Reusable executable runbooks)
+CREATE TABLE IF NOT EXISTS action_templates (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    problem_pattern TEXT NOT NULL,
+    execution_steps TEXT NOT NULL DEFAULT '[]',      -- JSON array string
+    acceptance_checks TEXT NOT NULL DEFAULT '[]',    -- JSON array string
+    rollback_steps TEXT NOT NULL DEFAULT '[]',       -- JSON array string
+    preconditions TEXT NOT NULL DEFAULT '[]',        -- JSON array string
+    source_methodology_id TEXT REFERENCES methodologies(id) ON DELETE SET NULL,
+    source_repo TEXT,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_action_templates_repo ON action_templates(source_repo);
+CREATE INDEX IF NOT EXISTS idx_action_templates_confidence ON action_templates(confidence DESC);
 
 -- 3. HYPOTHESIS_LOG (Trial & Error Memory)
 CREATE TABLE IF NOT EXISTS hypothesis_log (

@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any, Optional
 
 from claw.core.models import (
+    ActionTemplate,
     ContextSnapshot,
     HypothesisEntry,
     HypothesisOutcome,
@@ -84,8 +85,9 @@ class Repository:
     async def create_task(self, task: Task) -> Task:
         await self.engine.execute(
             """INSERT INTO tasks (id, project_id, title, description, status, priority,
-               task_type, recommended_agent, assigned_agent)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               task_type, recommended_agent, assigned_agent, action_template_id,
+               execution_steps, acceptance_checks)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 task.id,
                 task.project_id,
@@ -96,6 +98,9 @@ class Repository:
                 task.task_type,
                 task.recommended_agent,
                 task.assigned_agent,
+                task.action_template_id,
+                json.dumps(task.execution_steps),
+                json.dumps(task.acceptance_checks),
             ],
         )
         return task
@@ -238,6 +243,88 @@ class Repository:
             [task_id],
         )
         return int(row["next_attempt"]) if row else 1
+
+    # -------------------------------------------------------------------
+    # Action Templates
+    # -------------------------------------------------------------------
+
+    async def create_action_template(self, template: ActionTemplate) -> ActionTemplate:
+        await self.engine.execute(
+            """INSERT INTO action_templates
+               (id, title, problem_pattern, execution_steps, acceptance_checks,
+                rollback_steps, preconditions, source_methodology_id, source_repo,
+                confidence, success_count, failure_count, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                template.id,
+                template.title,
+                template.problem_pattern,
+                json.dumps(template.execution_steps),
+                json.dumps(template.acceptance_checks),
+                json.dumps(template.rollback_steps),
+                json.dumps(template.preconditions),
+                template.source_methodology_id,
+                template.source_repo,
+                template.confidence,
+                template.success_count,
+                template.failure_count,
+                template.created_at.isoformat(),
+                template.updated_at.isoformat(),
+            ],
+        )
+        return template
+
+    async def get_action_template(self, template_id: str) -> Optional[ActionTemplate]:
+        row = await self.engine.fetch_one(
+            "SELECT * FROM action_templates WHERE id = ?",
+            [template_id],
+        )
+        if row is None:
+            return None
+        return _row_to_action_template(row)
+
+    async def list_action_templates(
+        self,
+        source_repo: Optional[str] = None,
+        limit: int = 50,
+    ) -> list[ActionTemplate]:
+        if source_repo:
+            rows = await self.engine.fetch_all(
+                """SELECT * FROM action_templates
+                   WHERE source_repo = ?
+                   ORDER BY confidence DESC, updated_at DESC
+                   LIMIT ?""",
+                [source_repo, limit],
+            )
+        else:
+            rows = await self.engine.fetch_all(
+                """SELECT * FROM action_templates
+                   ORDER BY confidence DESC, updated_at DESC
+                   LIMIT ?""",
+                [limit],
+            )
+        return [_row_to_action_template(r) for r in rows]
+
+    async def update_action_template_outcome(self, template_id: str, success: bool) -> None:
+        now = datetime.now(UTC).isoformat()
+        if success:
+            await self.engine.execute(
+                """UPDATE action_templates
+                   SET success_count = success_count + 1,
+                       confidence = MIN(1.0, confidence + 0.03),
+                       updated_at = ?
+                   WHERE id = ?""",
+                [now, template_id],
+            )
+        else:
+            await self.engine.execute(
+                """UPDATE action_templates
+                   SET failure_count = failure_count + 1,
+                       confidence = MAX(0.0, confidence - 0.05),
+                       updated_at = ?
+                   WHERE id = ?""",
+                [now, template_id],
+            )
 
     # -------------------------------------------------------------------
     # Hypothesis Log
@@ -972,6 +1059,117 @@ class Repository:
         return results
 
     # -------------------------------------------------------------------
+    # Knowledge Browser Queries
+    # -------------------------------------------------------------------
+
+    async def get_top_synergy_edges(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Get top synergy edges ordered by score, with capability summaries."""
+        rows = await self.engine.fetch_all(
+            """SELECT sel.cap_a_id, sel.cap_b_id, sel.synergy_score,
+                      sel.synergy_type, sel.details
+               FROM synergy_exploration_log sel
+               WHERE sel.result = 'synergy'
+               ORDER BY sel.synergy_score DESC
+               LIMIT ?""",
+            [limit],
+        )
+        results = []
+        for row in rows:
+            cap_a = await self.get_methodology(row["cap_a_id"])
+            cap_b = await self.get_methodology(row["cap_b_id"])
+            details_raw = row["details"]
+            details = json.loads(details_raw) if isinstance(details_raw, str) else (details_raw or {})
+            results.append({
+                "cap_a_id": row["cap_a_id"],
+                "cap_b_id": row["cap_b_id"],
+                "cap_a_summary": (cap_a.problem_description[:80] if cap_a else "(deleted)"),
+                "cap_b_summary": (cap_b.problem_description[:80] if cap_b else "(deleted)"),
+                "cap_a_domains": (cap_a.capability_data or {}).get("domain", []) if cap_a else [],
+                "cap_b_domains": (cap_b.capability_data or {}).get("domain", []) if cap_b else [],
+                "synergy_score": row["synergy_score"] or 0.0,
+                "synergy_type": row["synergy_type"] or "",
+                "details": details,
+            })
+        return results
+
+    async def get_novelty_potential_distribution(self) -> dict[str, Any]:
+        """Get summary statistics for novelty and potential scores."""
+        row = await self.engine.fetch_one(
+            """SELECT
+                  COUNT(*) as total,
+                  AVG(novelty_score) as avg_novelty,
+                  MAX(novelty_score) as max_novelty,
+                  MIN(novelty_score) as min_novelty,
+                  AVG(potential_score) as avg_potential,
+                  MAX(potential_score) as max_potential,
+                  MIN(potential_score) as min_potential
+               FROM methodologies
+               WHERE novelty_score IS NOT NULL"""
+        )
+        if row is None or row["total"] == 0:
+            return {
+                "total": 0, "avg_novelty": 0.0, "max_novelty": 0.0,
+                "min_novelty": 0.0, "avg_potential": 0.0,
+                "max_potential": 0.0, "min_potential": 0.0,
+            }
+        return {
+            "total": int(row["total"]),
+            "avg_novelty": round(float(row["avg_novelty"] or 0), 4),
+            "max_novelty": round(float(row["max_novelty"] or 0), 4),
+            "min_novelty": round(float(row["min_novelty"] or 0), 4),
+            "avg_potential": round(float(row["avg_potential"] or 0), 4),
+            "max_potential": round(float(row["max_potential"] or 0), 4),
+            "min_potential": round(float(row["min_potential"] or 0), 4),
+        }
+
+    async def get_cross_domain_capabilities(
+        self, min_domains: int = 2, limit: int = 20
+    ) -> list[Methodology]:
+        """Get capabilities spanning multiple knowledge domains (bridge capabilities)."""
+        rows = await self.engine.fetch_all(
+            """SELECT * FROM methodologies
+               WHERE capability_data IS NOT NULL AND lifecycle_state != 'dead'"""
+        )
+        bridges = []
+        for row in rows:
+            raw = row["capability_data"]
+            if not raw:
+                continue
+            try:
+                cap = json.loads(raw) if isinstance(raw, str) else raw
+                domains = cap.get("domain", [])
+                if len(domains) >= min_domains:
+                    bridges.append(_row_to_methodology(row))
+            except (json.JSONDecodeError, TypeError):
+                continue
+        # Sort by number of domains descending, then by novelty_score descending
+        bridges.sort(
+            key=lambda m: (
+                len((m.capability_data or {}).get("domain", [])),
+                m.novelty_score or 0,
+            ),
+            reverse=True,
+        )
+        return bridges[:limit]
+
+    async def get_methodology_by_prefix(self, prefix: str) -> Optional[Methodology]:
+        """Find a methodology by ID prefix (first 6+ chars)."""
+        rows = await self.engine.fetch_all(
+            "SELECT * FROM methodologies WHERE id LIKE ? LIMIT 2",
+            [f"{prefix}%"],
+        )
+        if len(rows) == 1:
+            return _row_to_methodology(rows[0])
+        if len(rows) > 1:
+            # Ambiguous prefix — try exact match first
+            for row in rows:
+                if row["id"] == prefix:
+                    return _row_to_methodology(row)
+            # Return first match as best effort
+            return _row_to_methodology(rows[0])
+        return None
+
+    # -------------------------------------------------------------------
     # Peer Reviews
     # -------------------------------------------------------------------
 
@@ -1231,6 +1429,14 @@ def _row_to_project(row: dict[str, Any]) -> Project:
 
 
 def _row_to_task(row: dict[str, Any]) -> Task:
+    execution_steps = row.get("execution_steps", "[]")
+    if isinstance(execution_steps, str):
+        execution_steps = json.loads(execution_steps)
+
+    acceptance_checks = row.get("acceptance_checks", "[]")
+    if isinstance(acceptance_checks, str):
+        acceptance_checks = json.loads(acceptance_checks)
+
     return Task(
         id=row["id"],
         project_id=row["project_id"],
@@ -1241,6 +1447,9 @@ def _row_to_task(row: dict[str, Any]) -> Task:
         task_type=row.get("task_type"),
         recommended_agent=row.get("recommended_agent"),
         assigned_agent=row.get("assigned_agent"),
+        action_template_id=row.get("action_template_id"),
+        execution_steps=execution_steps,
+        acceptance_checks=acceptance_checks,
         context_snapshot_id=row.get("context_snapshot_id"),
         attempt_count=row.get("attempt_count", 0),
         escalation_count=row.get("escalation_count", 0),
@@ -1315,6 +1524,41 @@ def _row_to_methodology(row: dict[str, Any]) -> Methodology:
         capability_data=capability_data,
         novelty_score=row.get("novelty_score"),
         potential_score=row.get("potential_score"),
+    )
+
+
+def _row_to_action_template(row: dict[str, Any]) -> ActionTemplate:
+    execution_steps = row.get("execution_steps", "[]")
+    if isinstance(execution_steps, str):
+        execution_steps = json.loads(execution_steps)
+
+    acceptance_checks = row.get("acceptance_checks", "[]")
+    if isinstance(acceptance_checks, str):
+        acceptance_checks = json.loads(acceptance_checks)
+
+    rollback_steps = row.get("rollback_steps", "[]")
+    if isinstance(rollback_steps, str):
+        rollback_steps = json.loads(rollback_steps)
+
+    preconditions = row.get("preconditions", "[]")
+    if isinstance(preconditions, str):
+        preconditions = json.loads(preconditions)
+
+    return ActionTemplate(
+        id=row["id"],
+        title=row["title"],
+        problem_pattern=row["problem_pattern"],
+        execution_steps=execution_steps,
+        acceptance_checks=acceptance_checks,
+        rollback_steps=rollback_steps,
+        preconditions=preconditions,
+        source_methodology_id=row.get("source_methodology_id"),
+        source_repo=row.get("source_repo"),
+        confidence=float(row.get("confidence", 0.5) or 0.5),
+        success_count=int(row.get("success_count", 0) or 0),
+        failure_count=int(row.get("failure_count", 0) or 0),
+        created_at=_parse_dt(row.get("created_at")),
+        updated_at=_parse_dt(row.get("updated_at")),
     )
 
 

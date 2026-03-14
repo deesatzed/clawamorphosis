@@ -11,10 +11,12 @@ operating at four nested scales:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Optional
 
 from claw.core.factory import ClawContext
@@ -30,6 +32,46 @@ from claw.core.models import (
 )
 
 logger = logging.getLogger("claw.cycle")
+
+
+def _snapshot_workspace(workspace_dir: Optional[str]) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    if not workspace_dir:
+        return snapshot
+
+    root = Path(workspace_dir)
+    if not root.exists() or not root.is_dir():
+        return snapshot
+
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if ".git" in rel.parts or "__pycache__" in rel.parts:
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        snapshot[str(rel)] = hashlib.sha1(data).hexdigest()
+    return snapshot
+
+
+def _compute_workspace_change(before: dict[str, str], after: dict[str, str]) -> tuple[list[str], str]:
+    changed_paths = sorted(set(before.keys()) | set(after.keys()))
+    files_changed = [path for path in changed_paths if before.get(path) != after.get(path)]
+    if not files_changed:
+        return [], ""
+
+    lines: list[str] = []
+    for path in files_changed:
+        if path not in before:
+            lines.append(f"+++ {path}")
+        elif path not in after:
+            lines.append(f"--- {path}")
+        else:
+            lines.append(f"*** {path}")
+    return files_changed, "\n".join(lines)
 
 
 class ClawCycle(ABC):
@@ -229,10 +271,53 @@ class MicroClaw(ClawCycle):
             except Exception:
                 pass  # Non-critical enhancement
 
+        action_template = None
+        if task.action_template_id:
+            try:
+                action_template = await self.ctx.repository.get_action_template(
+                    task.action_template_id
+                )
+                if action_template is None:
+                    logger.warning(
+                        "Task %s references missing action template %s",
+                        task.id,
+                        task.action_template_id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "Failed to load action template %s for task %s: %s",
+                    task.action_template_id,
+                    task.id,
+                    e,
+                )
+
+        # Add explicit runbook guidance for execution-oriented tasks.
+        runbook_steps = list(task.execution_steps)
+        runbook_checks = list(task.acceptance_checks)
+        runbook_preconditions: list[str] = []
+        runbook_rollback: list[str] = []
+        if action_template is not None:
+            if not runbook_steps:
+                runbook_steps = list(action_template.execution_steps)
+            if not runbook_checks:
+                runbook_checks = list(action_template.acceptance_checks)
+            runbook_preconditions = list(action_template.preconditions)
+            runbook_rollback = list(action_template.rollback_steps)
+
+        for precondition in runbook_preconditions[:3]:
+            hints.append(f"Runbook precondition: {precondition}")
+        for step in runbook_steps[:5]:
+            hints.append(f"Runbook execute: {step}")
+        for check in runbook_checks[:5]:
+            hints.append(f"Runbook verify: {check}")
+        for rollback in runbook_rollback[:2]:
+            hints.append(f"Runbook rollback: {rollback}")
+
         task_ctx = TaskContext(
             task=task,
             forbidden_approaches=forbidden,
             hints=hints,
+            action_template=action_template,
         )
 
         logger.info(
@@ -318,6 +403,8 @@ class MicroClaw(ClawCycle):
         await self.ctx.repository.increment_task_attempt(task_ctx.task.id)
 
         agent = self.ctx.agents[agent_id]
+        workspace_dir = getattr(agent, "workspace_dir", None)
+        before_snapshot = _snapshot_workspace(workspace_dir)
 
         # Set token tracking context
         self.ctx.token_tracker.set_context(
@@ -327,6 +414,22 @@ class MicroClaw(ClawCycle):
         )
 
         outcome = await agent.run(task_ctx)
+        after_snapshot = _snapshot_workspace(workspace_dir)
+        actual_files_changed, actual_diff = _compute_workspace_change(before_snapshot, after_snapshot)
+
+        # Trust the real workspace diff over model self-report.
+        if actual_files_changed:
+            outcome.files_changed = actual_files_changed
+            outcome.diff = actual_diff
+        elif not outcome.failure_reason:
+            outcome.files_changed = []
+            outcome.diff = ""
+            outcome.failure_reason = "no_workspace_changes"
+            outcome.failure_detail = (
+                "Agent returned without modifying any workspace files."
+            )
+            outcome.tests_passed = False
+
         self._current_outcome = outcome
 
         logger.info(
@@ -509,6 +612,19 @@ class MicroClaw(ClawCycle):
                 "Learned: task %s failed by %s (error: %s)",
                 task.title, agent_id, error_sig,
             )
+
+        if task.action_template_id:
+            try:
+                await self.ctx.repository.update_action_template_outcome(
+                    task.action_template_id,
+                    verification.approved,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to update action template outcome for %s: %s",
+                    task.action_template_id,
+                    e,
+                )
 
         # Governance sweep (periodic, amortized over cycles)
         if self.ctx.governance is not None:

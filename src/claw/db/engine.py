@@ -195,6 +195,69 @@ class DatabaseEngine:
                 await self.conn.commit()
                 logger.info("Migration applied: methodologies.novelty_score + potential_score columns added")
 
+        if tables_exist:
+            # Migration 6: add action-template fields to tasks
+            row = await self.fetch_one(
+                "SELECT COUNT(*) as cnt FROM pragma_table_info('tasks') WHERE name = 'action_template_id'"
+            )
+            if row and row["cnt"] == 0:
+                await self.conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN action_template_id TEXT REFERENCES action_templates(id) ON DELETE SET NULL"
+                )
+                await self.conn.commit()
+                logger.info("Migration applied: tasks.action_template_id column added")
+
+            row = await self.fetch_one(
+                "SELECT COUNT(*) as cnt FROM pragma_table_info('tasks') WHERE name = 'execution_steps'"
+            )
+            if row and row["cnt"] == 0:
+                await self.conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN execution_steps TEXT NOT NULL DEFAULT '[]'"
+                )
+                await self.conn.commit()
+                logger.info("Migration applied: tasks.execution_steps column added")
+
+            row = await self.fetch_one(
+                "SELECT COUNT(*) as cnt FROM pragma_table_info('tasks') WHERE name = 'acceptance_checks'"
+            )
+            if row and row["cnt"] == 0:
+                await self.conn.execute(
+                    "ALTER TABLE tasks ADD COLUMN acceptance_checks TEXT NOT NULL DEFAULT '[]'"
+                )
+                await self.conn.commit()
+                logger.info("Migration applied: tasks.acceptance_checks column added")
+
+        # Migration 7: create action_templates table (safe even on fresh DB)
+        row = await self.fetch_one(
+            "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='action_templates'"
+        )
+        if row and row["cnt"] == 0:
+            await self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS action_templates (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    problem_pattern TEXT NOT NULL,
+                    execution_steps TEXT NOT NULL DEFAULT '[]',
+                    acceptance_checks TEXT NOT NULL DEFAULT '[]',
+                    rollback_steps TEXT NOT NULL DEFAULT '[]',
+                    preconditions TEXT NOT NULL DEFAULT '[]',
+                    source_methodology_id TEXT REFERENCES methodologies(id) ON DELETE SET NULL,
+                    source_repo TEXT,
+                    confidence REAL NOT NULL DEFAULT 0.5,
+                    success_count INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_action_templates_repo ON action_templates(source_repo);
+                CREATE INDEX IF NOT EXISTS idx_action_templates_confidence ON action_templates(confidence DESC);
+            """)
+            await self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_action_template ON tasks(action_template_id)"
+            )
+            await self.conn.commit()
+            logger.info("Migration applied: action_templates table created")
+
     async def execute(
         self, query: str, params: Optional[Sequence[Any]] = None
     ) -> None:

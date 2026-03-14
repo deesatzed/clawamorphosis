@@ -351,6 +351,33 @@ class GrokAgent(AgentInterface):
         parts = [f"# Task: {task.task.title}\n"]
         parts.append(task.task.description)
 
+        execution_steps = list(task.task.execution_steps)
+        acceptance_checks = list(task.task.acceptance_checks)
+
+        if task.action_template is not None:
+            if task.action_template.preconditions:
+                parts.append("\n## Runbook Preconditions")
+                for item in task.action_template.preconditions:
+                    parts.append(f"- {item}")
+            if not execution_steps:
+                execution_steps = list(task.action_template.execution_steps)
+            if not acceptance_checks:
+                acceptance_checks = list(task.action_template.acceptance_checks)
+            if task.action_template.rollback_steps:
+                parts.append("\n## Rollback Steps")
+                for step in task.action_template.rollback_steps:
+                    parts.append(f"- {step}")
+
+        if execution_steps:
+            parts.append("\n## Execution Steps")
+            for step in execution_steps:
+                parts.append(f"- `{step}`")
+
+        if acceptance_checks:
+            parts.append("\n## Acceptance Checks")
+            for check in acceptance_checks:
+                parts.append(f"- `{check}`")
+
         if task.forbidden_approaches:
             parts.append("\n## Forbidden Approaches (already tried, failed)")
             for fa in task.forbidden_approaches:

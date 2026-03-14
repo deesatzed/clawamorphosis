@@ -3,6 +3,7 @@
 import json
 
 from claw.core.models import (
+    ActionTemplate,
     AgentHealth,
     AgentMode,
     AgentResult,
@@ -82,6 +83,19 @@ class TestTaskModel:
         assert t.task_type == "analysis"
         assert t.recommended_agent == "claude"
         assert t.escalation_count == 0
+
+    def test_action_runbook_fields(self):
+        t = Task(
+            project_id="p1",
+            title="Patch dependency",
+            description="Upgrade package and verify behavior",
+            action_template_id="tmpl-1",
+            execution_steps=["npm install"],
+            acceptance_checks=["npm test"],
+        )
+        assert t.action_template_id == "tmpl-1"
+        assert t.execution_steps == ["npm install"]
+        assert t.acceptance_checks == ["npm test"]
 
 
 class TestTaskOutcome:
@@ -165,3 +179,25 @@ class TestMethodology:
         assert m2.tags == ["auth"]
         assert m2.fitness_vector["relevance"] == 0.8
         assert m2.parent_ids == ["p1", "p2"]
+
+
+class TestActionTemplate:
+    def test_roundtrip(self):
+        template = ActionTemplate(
+            title="Python bugfix runbook",
+            problem_pattern="module import failure",
+            execution_steps=["python -m pytest tests/test_imports.py -q"],
+            acceptance_checks=["pytest -q tests/test_imports.py"],
+            rollback_steps=["git checkout -- src/module.py"],
+            preconditions=["Dependencies are installed"],
+            source_repo="sample-repo",
+            confidence=0.8,
+            success_count=4,
+            failure_count=1,
+        )
+        payload = template.model_dump_json()
+        template_2 = ActionTemplate.model_validate_json(payload)
+        assert template_2.problem_pattern == "module import failure"
+        assert template_2.execution_steps[0].startswith("python -m")
+        assert template_2.acceptance_checks == ["pytest -q tests/test_imports.py"]
+        assert template_2.confidence == 0.8

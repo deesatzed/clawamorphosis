@@ -882,6 +882,21 @@ class TestCrossAgentConsistency:
             assert "Forbidden Approaches" in prompt, f"{agent.agent_id} missing forbidden section"
             assert "Bad approach" in prompt, f"{agent.agent_id} missing forbidden item"
 
+    def test_all_agents_build_prompt_includes_runbook_sections(self):
+        task = Task(
+            project_id="p1",
+            title="T",
+            description="D",
+            execution_steps=["pytest -q tests/test_api.py"],
+            acceptance_checks=["pytest -q tests/test_api.py"],
+        )
+        ctx = TaskContext(task=task)
+        for agent in self._make_agents():
+            prompt = agent._build_prompt(ctx)
+            assert "Execution Steps" in prompt, f"{agent.agent_id} missing execution steps section"
+            assert "Acceptance Checks" in prompt, f"{agent.agent_id} missing acceptance checks section"
+            assert "pytest -q tests/test_api.py" in prompt
+
     def test_all_agents_parse_success(self):
         stdout = "--- FILE: f.py ---\ncode"
         for agent in self._make_agents():

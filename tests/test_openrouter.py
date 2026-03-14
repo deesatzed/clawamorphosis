@@ -308,6 +308,21 @@ class TestBuildOpenRouterPrompt:
         assert "Try async approach" in prompt
         assert "Check the cache layer" in prompt
 
+    def test_prompt_includes_runbook_sections(self):
+        agent = ClaudeCodeAgent(mode=AgentMode.OPENROUTER, model="m")
+        task = Task(
+            project_id="proj-1",
+            title="Hardening",
+            description="Run explicit checks",
+            execution_steps=["pytest -q tests/test_auth.py"],
+            acceptance_checks=["pytest -q tests/test_auth.py"],
+        )
+        ctx = TaskContext(task=task)
+        prompt = agent._build_openrouter_prompt(ctx)
+        assert "Execution Steps" in prompt
+        assert "Acceptance Checks" in prompt
+        assert "pytest -q tests/test_auth.py" in prompt
+
     def test_prompt_no_forbidden_section_when_empty(self):
         agent = GrokAgent(mode=AgentMode.OPENROUTER, model="m")
         ctx = _make_task_context(forbidden=[])

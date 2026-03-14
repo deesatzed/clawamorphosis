@@ -5,6 +5,7 @@ import struct
 import pytest
 
 from claw.core.models import (
+    ActionTemplate,
     HypothesisEntry,
     HypothesisOutcome,
     Methodology,
@@ -92,6 +93,17 @@ class TestRepository:
 
     async def test_task_lifecycle(self, repository, sample_project, sample_task):
         await repository.create_project(sample_project)
+        template = ActionTemplate(
+            id="tmpl-seed",
+            title="Seed runbook",
+            problem_pattern="auth regression",
+            execution_steps=["pytest -q tests/test_auth.py"],
+            acceptance_checks=["pytest -q tests/test_auth.py"],
+        )
+        await repository.create_action_template(template)
+        sample_task.action_template_id = template.id
+        sample_task.execution_steps = ["pytest -q tests/test_auth.py"]
+        sample_task.acceptance_checks = ["pytest -q tests/test_auth.py"]
         await repository.create_task(sample_task)
 
         # Get next task
@@ -108,6 +120,42 @@ class TestRepository:
         await repository.increment_task_attempt(sample_task.id)
         got = await repository.get_task(sample_task.id)
         assert got.attempt_count == 1
+        assert got.action_template_id == "tmpl-seed"
+        assert got.execution_steps == ["pytest -q tests/test_auth.py"]
+        assert got.acceptance_checks == ["pytest -q tests/test_auth.py"]
+
+    async def test_action_template_lifecycle(self, repository):
+        template = ActionTemplate(
+            title="Node fix runbook",
+            problem_pattern="failing API handler tests",
+            execution_steps=["npm install", "npm run build"],
+            acceptance_checks=["npm test -- --runInBand"],
+            rollback_steps=["git restore src/api/handler.ts"],
+            preconditions=["Node 20 installed"],
+            source_repo="nanochat",
+            confidence=0.6,
+        )
+        await repository.create_action_template(template)
+
+        fetched = await repository.get_action_template(template.id)
+        assert fetched is not None
+        assert fetched.problem_pattern == "failing API handler tests"
+        assert fetched.execution_steps == ["npm install", "npm run build"]
+        assert fetched.acceptance_checks == ["npm test -- --runInBand"]
+
+        listed = await repository.list_action_templates(source_repo="nanochat")
+        assert any(t.id == template.id for t in listed)
+
+        await repository.update_action_template_outcome(template.id, success=True)
+        updated = await repository.get_action_template(template.id)
+        assert updated is not None
+        assert updated.success_count == 1
+        assert updated.confidence > 0.6
+
+        await repository.update_action_template_outcome(template.id, success=False)
+        updated_2 = await repository.get_action_template(template.id)
+        assert updated_2 is not None
+        assert updated_2.failure_count == 1
 
     async def test_hypothesis_lifecycle(self, repository, sample_project, sample_task):
         await repository.create_project(sample_project)

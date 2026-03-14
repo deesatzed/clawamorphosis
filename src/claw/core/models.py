@@ -107,6 +107,9 @@ class Task(BaseModel):
     task_type: Optional[str] = None
     recommended_agent: Optional[str] = None
     assigned_agent: Optional[str] = None
+    action_template_id: Optional[str] = None
+    execution_steps: list[str] = Field(default_factory=list)
+    acceptance_checks: list[str] = Field(default_factory=list)
     context_snapshot_id: Optional[str] = None
     attempt_count: int = 0
     escalation_count: int = 0
@@ -203,6 +206,24 @@ class Methodology(BaseModel):
     capability_data: Optional[dict] = None
     novelty_score: Optional[float] = None
     potential_score: Optional[float] = None
+
+
+class ActionTemplate(BaseModel):
+    """Reusable executable runbook mined from successful patterns."""
+    id: str = Field(default_factory=_new_id)
+    title: str
+    problem_pattern: str
+    execution_steps: list[str] = Field(default_factory=list)
+    acceptance_checks: list[str] = Field(default_factory=list)
+    rollback_steps: list[str] = Field(default_factory=list)
+    preconditions: list[str] = Field(default_factory=list)
+    source_methodology_id: Optional[str] = None
+    source_repo: Optional[str] = None
+    confidence: float = 0.5
+    success_count: int = 0
+    failure_count: int = 0
+    created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
 
 
 class PeerReview(BaseModel):
@@ -349,6 +370,7 @@ class TaskContext(BaseModel):
     task: Task
     forbidden_approaches: list[str] = Field(default_factory=list)
     hints: list[str] = Field(default_factory=list)
+    action_template: Optional[ActionTemplate] = None
     checkpoint_ref: Optional[str] = None
     previous_escalation_diagnosis: Optional[str] = None
 

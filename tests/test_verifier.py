@@ -18,6 +18,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -425,6 +426,9 @@ class TestDriftAlignment:
         installed. It loads the model (may take a moment), encodes both texts,
         and verifies high cosine similarity produces no violations.
         """
+        if os.getenv("CLAW_RUN_HEAVY_EMBEDDING_TESTS", "0") != "1":
+            pytest.skip("Set CLAW_RUN_HEAVY_EMBEDDING_TESTS=1 to run heavy embedding integration test")
+
         try:
             from claw.db.embeddings import EmbeddingEngine
 
@@ -775,6 +779,52 @@ class TestVerifyMain:
         assert result.approved is True
         dep_violations = [v for v in result.violations if v["check"] == "dependency_jail"]
         assert len(dep_violations) == 0
+
+
+# ===========================================================================
+# Acceptance checks
+# ===========================================================================
+
+class TestAcceptanceChecks:
+    async def test_validate_acceptance_command_blocks_shell_chaining(self):
+        tokens, reason = Verifier._validate_acceptance_command("pytest -q && echo done")
+        assert tokens is None
+        assert reason is not None
+        assert "shell chaining" in reason
+
+    async def test_run_acceptance_checks_passes_on_allowlisted_command(self, tmp_path):
+        verifier = _make_verifier()
+        violations, recommendations = await verifier._run_acceptance_checks(
+            workspace_dir=str(tmp_path),
+            acceptance_checks=["python3 --version"],
+        )
+        assert violations == []
+        assert recommendations == []
+
+    async def test_run_acceptance_checks_blocks_disallowed_command(self, tmp_path):
+        verifier = _make_verifier()
+        violations, recommendations = await verifier._run_acceptance_checks(
+            workspace_dir=str(tmp_path),
+            acceptance_checks=["rm -rf /tmp/anything"],
+        )
+        assert len(violations) == 1
+        assert violations[0]["check"] == "acceptance_checks"
+        assert "not allowlisted" in violations[0]["detail"]
+
+    async def test_verify_fails_when_acceptance_check_command_fails(self, tmp_path):
+        verifier = _make_verifier()
+        task_context = _make_task_context()
+        task_context.task.acceptance_checks = ["python3 -m module_that_does_not_exist"]
+        outcome = _make_outcome(diff=CLEAN_DIFF, tests_passed=True)
+
+        result = await verifier.verify(
+            outcome=outcome,
+            task_context=task_context,
+            workspace_dir=str(tmp_path),
+        )
+        assert result.approved is False
+        checks = [v for v in result.violations if v["check"] == "acceptance_checks"]
+        assert len(checks) == 1
 
 
 # ===========================================================================
