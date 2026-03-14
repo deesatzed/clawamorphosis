@@ -55,3 +55,12 @@ MITIGATION*.md
 INTEGRATION_*.md
 AGONY_DOSSIER.md
 *-this-session-*.txt
+
+# Local imported repos and scratch inputs
+OpenClaw-Medical-Skills/
+Repo2Eval/
+autoresearch-macos/
+claude-scientific-skills/
+page-agent/
+tmp/
+googembed.md
