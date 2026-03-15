@@ -386,6 +386,7 @@ That is the core build.
 ## Documentation Map
 
 - Full command-by-command reference: [docs/CAM_COMMAND_GUIDE.md](docs/CAM_COMMAND_GUIDE.md)
+- Which command to use first: [docs/CAM_COMMAND_DECISION_TREE.md](docs/CAM_COMMAND_DECISION_TREE.md)
 - Beginner assimilation walkthrough: [docs/CAM_BEGINNER_ASSIMILATION_GUIDE.md](docs/CAM_BEGINNER_ASSIMILATION_GUIDE.md)
 - Proven capabilities and example transcripts: [docs/CAM_PROVEN_CAPABILITIES.md](docs/CAM_PROVEN_CAPABILITIES.md)
 - Short operator quick-reference: [docs/CAM_OPERATOR_CHEATSHEET.md](docs/CAM_OPERATOR_CHEATSHEET.md)
