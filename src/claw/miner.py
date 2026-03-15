@@ -90,6 +90,8 @@ class RepoMiningResult:
     error: Optional[str] = None
     skipped: bool = False
     skip_reason: Optional[str] = None
+    methodology_ids: list[str] = field(default_factory=list)
+    action_template_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -134,6 +136,8 @@ class RepoScanRecord:
     last_mined_at: float
     findings_count: int = 0
     tokens_used: int = 0
+    methodology_ids: list[str] = field(default_factory=list)
+    action_template_ids: list[str] = field(default_factory=list)
 
 
 class RepoScanLedger:
@@ -190,6 +194,10 @@ class RepoScanLedger:
         self._load()
         return self._records.get(self.repo_key(repo_path))
 
+    def list_records(self) -> list[RepoScanRecord]:
+        self._load()
+        return list(self._records.values())
+
     def should_mine(
         self,
         candidate: RepoCandidate,
@@ -223,6 +231,8 @@ class RepoScanLedger:
             last_mined_at=time.time(),
             findings_count=len(result.findings),
             tokens_used=result.tokens_used,
+            methodology_ids=list(result.methodology_ids),
+            action_template_ids=list(result.action_template_ids),
         )
         self._save()
 
@@ -639,9 +649,15 @@ class RepoMiner:
         logger.info("Extracted %d findings from %s", len(findings), repo_name)
 
         # Store each finding in semantic memory
+        methodology_ids: list[str] = []
+        action_template_ids: list[str] = []
         for finding in findings:
             try:
-                await self.store_finding(finding, target_project_id)
+                methodology_id = await self.store_finding(finding, target_project_id)
+                if methodology_id:
+                    methodology_ids.append(methodology_id)
+                if finding.action_template_id:
+                    action_template_ids.append(finding.action_template_id)
             except Exception as e:
                 logger.warning("Failed to store finding '%s': %s", finding.title, e)
 
@@ -654,6 +670,8 @@ class RepoMiner:
             tokens_used=response.tokens_used,
             cost_usd=0.0,  # Cost tracked by token_tracker separately
             duration_seconds=duration,
+            methodology_ids=methodology_ids,
+            action_template_ids=action_template_ids,
         )
 
     async def store_finding(

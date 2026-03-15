@@ -322,6 +322,8 @@ class TestIncrementalMiningLedger:
             )],
             files_analyzed=2,
             tokens_used=123,
+            methodology_ids=["meth-1"],
+            action_template_ids=["tmpl-1"],
         )
         ledger.record_result(candidate, result)
 
@@ -329,6 +331,10 @@ class TestIncrementalMiningLedger:
         should_mine, reason = loaded.should_mine(candidate)
         assert should_mine is False
         assert reason == "unchanged"
+        loaded_record = loaded.get_record(candidate.path)
+        assert loaded_record is not None
+        assert loaded_record.methodology_ids == ["meth-1"]
+        assert loaded_record.action_template_ids == ["tmpl-1"]
 
         time.sleep(0.01)
         (repo / "main.py").write_text("print('v2')\n", encoding="utf-8")

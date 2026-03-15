@@ -1,25 +1,19 @@
 """CAM CLI — Typer-based command line interface for Clawamorphosis.
 
-Commands:
-  evaluate <repo>        — structural analysis + 18-prompt evaluation battery
-  enhance <repo>         — full pipeline: evaluate -> plan -> dispatch -> verify -> learn
-  fleet-enhance <dir>    — multi-repo fleet processing with ranking and budget allocation
-  mine <dir>             — mine repos for patterns (--scan-only, --depth, --dedup)
-  ideate <dir>           — generate novel app concepts from CAM memory + candidate repos
-  create <repo>          — create or augment a repo from a requested outcome using CAM memory
-  forge-export           — export CAM memory into a standalone Forge knowledge pack
-  validate               — validate a created repo against its saved spec and checks
-  benchmark              — benchmark Forge output
-  forge-benchmark        — run the standalone Forge regression benchmark with time limits
-  quickstart <repo>      — guided goal setup + runbook preview (+ optional execution)
-  runbook <task-id>      — show task execution/acceptance runbook
-  add-goal <repo>        — manually add a task/goal for a repository
-  results                — show past task results from the database
-  status                 — show system status
-  setup                  — interactive API key, model, and agent configuration
-  govern [action]        — memory governance: stats, sweep, gc, quota, prune
-  synergies              — capability synergy graph summary and exploration stats
-  kb <subcommand>        — knowledge browser: insights, search, capability, domains, synergies
+Primary workflows:
+  evaluate <repo>        — inspect one repo and score improvement potential
+  enhance <repo>         — improve one existing repo in a bounded loop
+  mine <dir>             — learn from outside repos into CAM memory
+  ideate <dir>           — invent standalone app concepts from mined knowledge
+  create <repo>          — create or augment a repo from a requested outcome
+  validate               — verify a created repo against its saved spec/checks
+
+Advanced groups:
+  learn <subcommand>     — learning continuum, delta, reassessment, synergies
+  task <subcommand>      — goal/task setup, runbooks, and task results
+  forge <subcommand>     — standalone Forge export and benchmark workflow
+  doctor <subcommand>    — preflight and environment diagnostics
+  kb <subcommand>        — low-level knowledge browser
 """
 
 from __future__ import annotations
@@ -45,13 +39,34 @@ from rich.text import Text
 
 app = typer.Typer(
     name="cam",
-    help="CAM — Clawamorphosis Knowledge System",
+    help="CAM — inspect repos, learn from repos, create from that learning, and validate outcomes",
     no_args_is_help=True,
 )
 console = Console()
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 _IDEA_DIR = ROOT_DIR / "data" / "ideation"
+
+learn_app = typer.Typer(
+    name="learn",
+    help="Learning lifecycle tools — delta, continuum report, reassessment, synergies",
+    no_args_is_help=True,
+)
+task_app = typer.Typer(
+    name="task",
+    help="Task/operator tools — add goals, quickstart, runbooks, results",
+    no_args_is_help=True,
+)
+forge_app = typer.Typer(
+    name="forge",
+    help="Standalone Forge subsystem — export knowledge packs and benchmark them",
+    no_args_is_help=True,
+)
+doctor_app = typer.Typer(
+    name="doctor",
+    help="Preflight and diagnostics — key checks and system health",
+    no_args_is_help=True,
+)
 
 
 def _setup_logging(verbose: bool = False) -> None:
@@ -549,6 +564,89 @@ def _score_methodology_for_task(
         reasons.append("activation trigger matched task")
 
     return score, reasons, triggers
+
+
+_TRIGGER_OPPORTUNITY_MAP: dict[str, str] = {
+    "finetuning": "Task-specific small-model training or adapter pipelines",
+    "evaluation": "Benchmark and evaluation harnesses with measurable pass/fail criteria",
+    "validation": "Spec-backed validation and acceptance-check workflows",
+    "repo_repair": "Automated repo repair, regression triage, and fix suggestions",
+    "testing": "Test generation, stabilization, and coverage-improvement workflows",
+    "data_pipeline": "Dataset, embedding, ingestion, or packing pipelines",
+    "frontend": "Frontend scaffolding, UI modernization, and usability improvements",
+    "backend": "Service/API modernization and backend capability upgrades",
+    "security": "Security hardening, secret handling, and permission boundary improvements",
+    "deployment": "CI/CD, packaging, and deployment automation",
+}
+
+
+def _summarize_new_capabilities(methodologies: list[Any]) -> dict[str, Any]:
+    """Summarize domains, capability types, and source repos for newly mined methodologies."""
+    domains: dict[str, int] = {}
+    capability_types: dict[str, int] = {}
+    source_repos: dict[str, int] = {}
+
+    for meth in methodologies:
+        capability_data = getattr(meth, "capability_data", None) or {}
+        if isinstance(capability_data, dict):
+            for domain in capability_data.get("domain", []) or []:
+                domains[str(domain)] = domains.get(str(domain), 0) + 1
+            cap_type = capability_data.get("capability_type")
+            if cap_type:
+                capability_types[str(cap_type)] = capability_types.get(str(cap_type), 0) + 1
+
+        for tag in getattr(meth, "tags", []) or []:
+            if isinstance(tag, str) and tag.startswith("source:"):
+                source_repo = tag.split(":", 1)[1]
+                source_repos[source_repo] = source_repos.get(source_repo, 0) + 1
+
+    return {
+        "domains": sorted(domains.items(), key=lambda item: (-item[1], item[0])),
+        "capability_types": sorted(capability_types.items(), key=lambda item: (-item[1], item[0])),
+        "source_repos": sorted(source_repos.items(), key=lambda item: (-item[1], item[0])),
+    }
+
+
+def _infer_feature_opportunities(
+    methodologies: list[Any],
+    *,
+    methodology_ids_with_templates: Optional[set[str]] = None,
+    limit: int = 6,
+) -> list[dict[str, Any]]:
+    """Infer likely next-step features or updates from newly mined methodologies."""
+    trigger_counts: dict[str, int] = {}
+    template_ids = methodology_ids_with_templates or set()
+    for meth in methodologies:
+        template_count = 1 if getattr(meth, "id", "") in template_ids else 0
+        for trigger in _derive_activation_triggers(meth, template_count=template_count):
+            if trigger in _TRIGGER_OPPORTUNITY_MAP:
+                trigger_counts[trigger] = trigger_counts.get(trigger, 0) + 1
+
+    ranked = sorted(trigger_counts.items(), key=lambda item: (-item[1], item[0]))
+    opportunities: list[dict[str, Any]] = []
+    for trigger, count in ranked[:limit]:
+        opportunities.append({
+            "trigger": trigger,
+            "count": count,
+            "description": _TRIGGER_OPPORTUNITY_MAP[trigger],
+        })
+    return opportunities
+
+
+def _recently_created_near_mine(
+    created_at: Any,
+    mine_ts: float,
+    *,
+    lookback_hours: float = 6.0,
+) -> bool:
+    """Best-effort fallback for older ledger entries that do not record created IDs."""
+    if created_at is None:
+        return False
+    try:
+        created_ts = created_at.timestamp()
+    except AttributeError:
+        return False
+    return (mine_ts - (lookback_hours * 3600)) <= created_ts <= (mine_ts + 300)
 
 
 def _build_ideation_prompt(
@@ -2122,7 +2220,7 @@ def _display_fleet_summary(
 # ---------------------------------------------------------------------------
 
 
-@app.command()
+@app.command(hidden=True)
 def results(
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
     limit: int = typer.Option(20, "--limit", "-n", help="Number of results to show"),
@@ -2301,7 +2399,7 @@ def _display_runbook_details(task, project_name: str, action_template=None) -> N
             console.print(f"  {i}. {step}")
 
 
-@app.command()
+@app.command(hidden=True)
 def runbook(
     task_id: str = typer.Argument(..., help="Task ID to inspect"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
@@ -2339,7 +2437,7 @@ async def _runbook_async(task_id: str, config_path: Optional[str]) -> None:
         await ctx.close()
 
 
-@app.command()
+@app.command(hidden=True)
 def quickstart(
     repo: str = typer.Argument(..., help="Path to the repository this goal is for"),
     title: str = typer.Option(..., "--title", "-t", prompt="Goal title", help="Short title for the goal"),
@@ -2626,7 +2724,7 @@ async def _create_async(
                   f"{spec_path}` then `cam benchmark`.[/dim]")
 
 
-@app.command(name="add-goal")
+@app.command(name="add-goal", hidden=True)
 def add_goal(
     repo: str = typer.Argument(..., help="Path to the repository this goal is for"),
     title: str = typer.Option(..., "--title", "-t", prompt="Goal title", help="Short title for the goal"),
@@ -2823,7 +2921,7 @@ def ideate(
         raise typer.Exit(124)
 
 
-@app.command(name="keycheck")
+@app.command(name="keycheck", hidden=True)
 def keycheck(
     for_command: str = typer.Option("mine", "--for", help="Command to preflight: mine, ideate"),
     live: bool = typer.Option(False, "--live", help="Also validate the keys with a tiny real provider call"),
@@ -3098,7 +3196,7 @@ def mine(
         raise typer.Exit(124)
 
 
-@app.command(name="mine-report")
+@app.command(name="mine-report", hidden=True)
 def mine_report(
     directory: str = typer.Argument(..., help="Path to directory containing repos to inspect"),
     depth: int = typer.Option(6, "--depth", "-d", help="Max directory depth for repo discovery"),
@@ -3460,7 +3558,7 @@ async def _mine_async(
         await ctx.close()
 
 
-@app.command(name="forge-export")
+@app.command(name="forge-export", hidden=True)
 def forge_export(
     out: str = typer.Option("data/cam_knowledge_pack.jsonl", "--out", help="Output JSONL knowledge pack path"),
     db: Optional[str] = typer.Option(None, "--db", help="Override CAM database path"),
@@ -3510,7 +3608,7 @@ def forge_export(
     console.print(f"  File: {payload['out']}")
 
 
-@app.command(name="forge-benchmark")
+@app.command(name="forge-benchmark", hidden=True)
 def forge_benchmark(
     repo: str = typer.Option("tests/fixtures/embedding_forge/repo", "--repo", help="Fixture or target repo path"),
     note: str = typer.Option("tests/fixtures/embedding_forge/note.md", "--note", help="Note path"),
@@ -3660,7 +3758,7 @@ def benchmark(
     console.print(f"  Summary: {Path(out) / 'benchmark_summary.json'}")
 
 
-@app.command()
+@app.command(hidden=True)
 def govern(
     action: str = typer.Argument(
         "stats",
@@ -3952,7 +4050,7 @@ def setup(
     console.print(f"  claw forge-benchmark     — benchmark Forge with time guardrails")
 
 
-@app.command()
+@app.command(hidden=True)
 def synergies(
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Show detailed edge list"),
     config: Optional[str] = typer.Option(None, "--config", help="Path to claw.toml"),
@@ -3962,7 +4060,7 @@ def synergies(
     asyncio.run(_synergies_async(verbose))
 
 
-@app.command(name="assimilation-report")
+@app.command(name="assimilation-report", hidden=True)
 def assimilation_report(
     limit: int = typer.Option(10, "--limit", "-n", help="Rows to show per section"),
     future_threshold: float = typer.Option(0.65, "--future-threshold", help="Potential score threshold for future-candidate flag"),
@@ -3973,7 +4071,21 @@ def assimilation_report(
     asyncio.run(_assimilation_report_async(limit, future_threshold))
 
 
-@app.command()
+@app.command(name="assimilation-delta", hidden=True)
+def assimilation_delta(
+    directory: Optional[str] = typer.Argument(None, help="Optional repo directory to scope the report"),
+    depth: int = typer.Option(6, "--depth", "-d", help="Max directory depth when scoping by directory"),
+    dedup: bool = typer.Option(True, "--dedup/--no-dedup", help="Dedup repo iterations by canonical name"),
+    since_hours: float = typer.Option(24.0, "--since-hours", help="Only include repos mined within this many hours"),
+    latest: int = typer.Option(10, "--latest", "-n", help="Maximum recently mined repos/methodologies to summarize"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Show what recent mine runs actually added: methodologies, templates, capabilities, and next uses."""
+    _setup_logging(False)
+    asyncio.run(_assimilation_delta_async(directory, depth, dedup, since_hours, latest, config))
+
+
+@app.command(hidden=True)
 def reassess(
     repo: Optional[str] = typer.Argument(None, help="Optional repository path for additional context"),
     task: str = typer.Option(..., "--task", "-t", help="Task or goal CAM should reassess prior knowledge against"),
@@ -3985,6 +4097,233 @@ def reassess(
     """Re-score prior methodologies against a new task and explain why they matter now."""
     _setup_logging(False)
     asyncio.run(_reassess_async(repo, task, limit, min_score, future_threshold))
+
+
+async def _assimilation_delta_async(
+    directory: Optional[str],
+    depth: int,
+    dedup: bool,
+    since_hours: float,
+    latest: int,
+    config: Optional[str],
+) -> None:
+    from datetime import UTC, datetime
+    from rich.panel import Panel
+    from claw.core.config import load_config
+    from claw.miner import RepoScanLedger, _default_scan_ledger_path, _discover_repos, _dedup_iterations
+
+    cfg = load_config(Path(config) if config else None)
+    ledger = RepoScanLedger(_default_scan_ledger_path(cfg))
+
+    scoped_repo_keys: Optional[set[str]] = None
+    if directory:
+        dir_path = Path(directory).resolve()
+        if not dir_path.exists():
+            console.print(f"[red]Directory does not exist: {dir_path}[/red]")
+            raise typer.Exit(1)
+        if not dir_path.is_dir():
+            console.print(f"[red]Path is not a directory: {dir_path}[/red]")
+            raise typer.Exit(1)
+        candidates = _discover_repos(dir_path, max_depth=depth)
+        if dedup:
+            candidates, _ = _dedup_iterations(candidates)
+        scoped_repo_keys = {ledger.repo_key(candidate.path) for candidate in candidates}
+
+    cutoff_ts = _time.time() - (max(since_hours, 0.0) * 3600.0)
+    records = ledger.list_records()
+    if scoped_repo_keys is not None:
+        records = [record for record in records if record.repo_path in scoped_repo_keys]
+    records = [record for record in records if record.last_mined_at >= cutoff_ts]
+    records.sort(key=lambda record: record.last_mined_at, reverse=True)
+    if latest > 0:
+        records = records[:latest]
+
+    if not records:
+        console.print("[yellow]No mined repos matched this delta window. Try a larger --since-hours or run cam mine first.[/yellow]")
+        return
+
+    engine, repository = await _kb_engine()
+
+    try:
+        repo_summaries: list[dict[str, Any]] = []
+        all_methodologies: list[Any] = []
+        methodology_ids_with_templates: set[str] = set()
+
+        for record in records:
+            methodologies: list[Any] = []
+            seen_methodology_ids: set[str] = set()
+            for methodology_id in record.methodology_ids:
+                meth = await repository.get_methodology(methodology_id)
+                if meth is not None and meth.id not in seen_methodology_ids:
+                    methodologies.append(meth)
+                    seen_methodology_ids.add(meth.id)
+
+            if not methodologies:
+                fallback_methodologies = await repository.get_methodologies_by_tag(
+                    f"source:{record.repo_name}",
+                    limit=max(20, record.findings_count * 3 or 20),
+                )
+                methodologies = [
+                    meth for meth in fallback_methodologies
+                    if _recently_created_near_mine(meth.created_at, record.last_mined_at)
+                ]
+                seen_methodology_ids = {meth.id for meth in methodologies}
+
+            action_templates: list[Any] = []
+            for template_id in record.action_template_ids:
+                template = await repository.get_action_template(template_id)
+                if template is not None:
+                    action_templates.append(template)
+                    if template.source_methodology_id:
+                        methodology_ids_with_templates.add(template.source_methodology_id)
+
+            if not action_templates:
+                fallback_templates = await repository.list_action_templates(
+                    source_repo=record.repo_name,
+                    limit=max(10, len(methodologies) * 2 or 10),
+                )
+                action_templates = [
+                    template for template in fallback_templates
+                    if _recently_created_near_mine(template.created_at, record.last_mined_at)
+                ]
+                for template in action_templates:
+                    if template.source_methodology_id:
+                        methodology_ids_with_templates.add(template.source_methodology_id)
+
+            future_candidates = [
+                meth for meth in methodologies
+                if _is_future_candidate(
+                    meth,
+                    potential_threshold=0.65,
+                    template_count=1 if meth.id in methodology_ids_with_templates else 0,
+                )
+            ]
+
+            all_methodologies.extend(methodologies)
+            repo_summaries.append({
+                "record": record,
+                "methodologies": methodologies,
+                "templates": action_templates,
+                "future_candidates": future_candidates,
+            })
+
+        if not all_methodologies:
+            console.print("[yellow]Mine records exist, but no stored methodologies could be resolved from them yet.[/yellow]")
+            return
+
+        capability_summary = _summarize_new_capabilities(all_methodologies)
+        opportunities = _infer_feature_opportunities(
+            all_methodologies,
+            methodology_ids_with_templates=methodology_ids_with_templates,
+            limit=max(3, min(6, latest if latest > 0 else 6)),
+        )
+
+        console.print(Panel.fit(
+            f"[bold cyan]CAM Assimilation Delta[/bold cyan]\n"
+            f"[bold]{len(repo_summaries)}[/bold] mined repo(s) in the last [bold]{since_hours:g}[/bold] hour(s)\n"
+            f"[bold]{len(all_methodologies)}[/bold] methodology record(s) resolved from those mine runs\n"
+            f"[bold]{sum(len(item['templates']) for item in repo_summaries)}[/bold] action template(s) created",
+            border_style="cyan",
+        ))
+
+        summary = Table(title="Recently Mined Repos")
+        summary.add_column("Repo", style="cyan", max_width=28)
+        summary.add_column("Mined At", style="dim", width=18)
+        summary.add_column("Meth", justify="right", width=6)
+        summary.add_column("Tpl", justify="right", width=5)
+        summary.add_column("Future", justify="right", width=7)
+        summary.add_column("Top Domains", max_width=28)
+        for item in repo_summaries:
+            record = item["record"]
+            methodologies = item["methodologies"]
+            domains: dict[str, int] = {}
+            for meth in methodologies:
+                capability_data = getattr(meth, "capability_data", None) or {}
+                if isinstance(capability_data, dict):
+                    for domain in capability_data.get("domain", []) or []:
+                        domains[str(domain)] = domains.get(str(domain), 0) + 1
+            domain_str = ", ".join(name for name, _count in sorted(domains.items(), key=lambda x: (-x[1], x[0]))[:3]) or "-"
+            summary.add_row(
+                record.repo_name,
+                datetime.fromtimestamp(record.last_mined_at, UTC).strftime("%Y-%m-%d %H:%M"),
+                str(len(methodologies)),
+                str(len(item["templates"])),
+                str(len(item["future_candidates"])),
+                domain_str,
+            )
+        console.print(summary)
+
+        if capability_summary["domains"] or capability_summary["capability_types"]:
+            cap_table = Table(title="New Capabilities Surfaced")
+            cap_table.add_column("Kind", style="bold", width=16)
+            cap_table.add_column("Top Items", max_width=76)
+            if capability_summary["domains"]:
+                cap_table.add_row(
+                    "Domains",
+                    ", ".join(f"{name} ({count})" for name, count in capability_summary["domains"][:8]),
+                )
+            if capability_summary["capability_types"]:
+                cap_table.add_row(
+                    "Capability types",
+                    ", ".join(f"{name} ({count})" for name, count in capability_summary["capability_types"][:8]),
+                )
+            console.print(cap_table)
+
+        if opportunities:
+            opp_table = Table(title="Possible New Features / Updates")
+            opp_table.add_column("Signal", style="cyan", width=16)
+            opp_table.add_column("Weight", justify="right", width=6)
+            opp_table.add_column("What CAM could operationalize next", max_width=72)
+            for opp in opportunities:
+                opp_table.add_row(opp["trigger"], str(opp["count"]), opp["description"])
+            console.print(opp_table)
+
+        top_methodologies = sorted(
+            all_methodologies,
+            key=lambda meth: (
+                1 if meth.id in methodology_ids_with_templates else 0,
+                getattr(meth, "potential_score", None) or 0,
+                getattr(meth, "novelty_score", None) or 0,
+                getattr(meth, "created_at", datetime.min.replace(tzinfo=UTC)),
+            ),
+            reverse=True,
+        )
+
+        top_limit = latest if latest > 0 else 10
+        top_table = Table(title=f"New Methodologies / Operationalization Candidates ({min(len(top_methodologies), top_limit)})")
+        top_table.add_column("ID", width=8)
+        top_table.add_column("Repo", style="cyan", max_width=20)
+        top_table.add_column("Description", max_width=40)
+        top_table.add_column("Stage", width=17)
+        top_table.add_column("Potential", justify="right", width=9)
+        top_table.add_column("Novelty", justify="right", width=8)
+        top_table.add_column("Triggers", max_width=26)
+        for meth in top_methodologies[:top_limit]:
+            template_count = 1 if meth.id in methodology_ids_with_templates else 0
+            stage = _classify_assimilation_stage(meth, template_count=template_count)
+            source_repo = next(
+                (tag.split(":", 1)[1] for tag in getattr(meth, "tags", []) or [] if isinstance(tag, str) and tag.startswith("source:")),
+                "-",
+            )
+            triggers = ", ".join(_derive_activation_triggers(meth, template_count=template_count)[:3]) or "-"
+            top_table.add_row(
+                meth.id[:8],
+                source_repo,
+                meth.problem_description[:40],
+                stage,
+                f"{(meth.potential_score or 0):.3f}",
+                f"{(meth.novelty_score or 0):.3f}" if meth.novelty_score is not None else "-",
+                triggers,
+            )
+        console.print(top_table)
+
+        console.print(
+            "\n[dim]Interpretation: this report answers 'what did the recent mine runs actually add?' "
+            "Use 'cam assimilation-report' for lifecycle maturity and 'cam kb synergies' for cross-capability relationships.[/dim]"
+        )
+
+    finally:
+        await engine.close()
 
 
 async def _assimilation_report_async(limit: int, future_threshold: float) -> None:
@@ -4366,7 +4705,223 @@ async def _synergies_async(verbose: bool) -> None:
         await engine.close()
 
 
-@app.command(name="prism-demo")
+# ---------------------------------------------------------------------------
+# Grouped workflow aliases
+# ---------------------------------------------------------------------------
+
+
+@learn_app.command(name="report")
+def learn_report(
+    limit: int = typer.Option(10, "--limit", "-n", help="Rows to show per section"),
+    future_threshold: float = typer.Option(0.65, "--future-threshold", help="Potential score threshold for future-candidate flag"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam assimilation-report`."""
+    assimilation_report(limit=limit, future_threshold=future_threshold, config=config)
+
+
+@learn_app.command(name="delta")
+def learn_delta(
+    directory: Optional[str] = typer.Argument(None, help="Optional repo directory to scope the report"),
+    depth: int = typer.Option(6, "--depth", "-d", help="Max directory depth when scoping by directory"),
+    dedup: bool = typer.Option(True, "--dedup/--no-dedup", help="Dedup repo iterations by canonical name"),
+    since_hours: float = typer.Option(24.0, "--since-hours", help="Only include repos mined within this many hours"),
+    latest: int = typer.Option(10, "--latest", "-n", help="Maximum recently mined repos/methodologies to summarize"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam assimilation-delta`."""
+    assimilation_delta(
+        directory=directory,
+        depth=depth,
+        dedup=dedup,
+        since_hours=since_hours,
+        latest=latest,
+        config=config,
+    )
+
+
+@learn_app.command(name="reassess")
+def learn_reassess(
+    repo: Optional[str] = typer.Argument(None, help="Optional repository path for additional context"),
+    task: str = typer.Option(..., "--task", "-t", help="Task or goal CAM should reassess prior knowledge against"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum recommendations to show"),
+    min_score: float = typer.Option(0.2, "--min-score", help="Minimum reassessment score to show"),
+    future_threshold: float = typer.Option(0.65, "--future-threshold", help="Potential score threshold for future-candidate flag"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam reassess`."""
+    reassess(
+        repo=repo,
+        task=task,
+        limit=limit,
+        min_score=min_score,
+        future_threshold=future_threshold,
+        config=config,
+    )
+
+
+@learn_app.command(name="synergies")
+def learn_synergies(
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Show detailed edge list"),
+    config: Optional[str] = typer.Option(None, "--config", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam synergies`."""
+    synergies(verbose=verbose, config=config)
+
+
+@task_app.command(name="add")
+def task_add(
+    repo: str = typer.Argument(..., help="Path to the repository this goal is for"),
+    title: str = typer.Option(..., "--title", "-t", prompt="Goal title", help="Short title for the goal"),
+    description: str = typer.Option(
+        ..., "--description", "-d", prompt="Goal description (what should the agent do?)",
+        help="Detailed description of what should be accomplished",
+    ),
+    priority: str = typer.Option("medium", "--priority", "-p", help="Priority: critical, high, medium, low"),
+    task_type: str = typer.Option(
+        "analysis", "--type",
+        help="Task type: analysis, testing, documentation, security, refactoring, bug_fix, architecture, dependency_analysis",
+    ),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Preferred agent: claude, codex, gemini, grok"),
+    step: list[str] = typer.Option([], "--step", help="Execution command to run for this goal (repeatable)"),
+    check: list[str] = typer.Option([], "--check", help="Acceptance check command for this goal (repeatable)"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam add-goal`."""
+    add_goal(
+        repo=repo,
+        title=title,
+        description=description,
+        priority=priority,
+        task_type=task_type,
+        agent=agent,
+        step=step,
+        check=check,
+        config=config,
+    )
+
+
+@task_app.command(name="quickstart")
+def task_quickstart(
+    repo: str = typer.Argument(..., help="Path to the repository this goal is for"),
+    title: str = typer.Option(..., "--title", "-t", prompt="Goal title", help="Short title for the goal"),
+    description: str = typer.Option(
+        ..., "--description", "-d", prompt="Goal description (what should be done?)",
+        help="Detailed goal description",
+    ),
+    priority: str = typer.Option("high", "--priority", "-p", help="Priority: critical, high, medium, low"),
+    task_type: str = typer.Option(
+        "bug_fix",
+        "--type",
+        help="Task type: analysis, testing, documentation, security, refactoring, bug_fix, architecture, dependency_analysis",
+    ),
+    agent: Optional[str] = typer.Option(None, "--agent", "-a", help="Preferred agent: claude, codex, gemini, grok"),
+    step: list[str] = typer.Option([], "--step", help="Execution command to run for this goal (repeatable)"),
+    check: list[str] = typer.Option([], "--check", help="Acceptance check command for this goal (repeatable)"),
+    preview: bool = typer.Option(True, "--preview/--no-preview", help="Show runbook and dry-run preview after creating the goal"),
+    execute: bool = typer.Option(False, "--execute", help="Immediately execute this exact task after setup"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam quickstart`."""
+    quickstart(
+        repo=repo,
+        title=title,
+        description=description,
+        priority=priority,
+        task_type=task_type,
+        agent=agent,
+        step=step,
+        check=check,
+        preview=preview,
+        execute=execute,
+        config=config,
+    )
+
+
+@task_app.command(name="runbook")
+def task_runbook(
+    task_id: str = typer.Argument(..., help="Task ID to inspect"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam runbook`."""
+    runbook(task_id=task_id, config=config)
+
+
+@task_app.command(name="results")
+def task_results(
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of results to show"),
+    project: Optional[str] = typer.Option(None, "--project", "-p", help="Filter by project ID"),
+) -> None:
+    """Preferred grouped alias for `cam results`."""
+    results(config=config, limit=limit, project=project)
+
+
+@forge_app.command(name="export")
+def forge_export_grouped(
+    out: str = typer.Option("data/cam_knowledge_pack.jsonl", "--out", help="Output JSONL knowledge pack path"),
+    db: Optional[str] = typer.Option(None, "--db", help="Override CAM database path"),
+    max_methodologies: int = typer.Option(300, "--max-methodologies", help="Maximum methodologies to export"),
+    max_tasks: int = typer.Option(300, "--max-tasks", help="Maximum tasks to export"),
+    max_minutes: int = typer.Option(5, "--max-minutes", help="Wall-clock time guardrail for the export"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam forge-export`."""
+    forge_export(
+        out=out,
+        db=db,
+        max_methodologies=max_methodologies,
+        max_tasks=max_tasks,
+        max_minutes=max_minutes,
+        verbose=verbose,
+        config=config,
+    )
+
+
+@forge_app.command(name="benchmark")
+def forge_benchmark_grouped(
+    repo: str = typer.Option("tests/fixtures/embedding_forge/repo", "--repo", help="Fixture or target repo path"),
+    note: str = typer.Option("tests/fixtures/embedding_forge/note.md", "--note", help="Note path"),
+    knowledge_pack: str = typer.Option(
+        "tests/fixtures/embedding_forge/knowledge_pack.jsonl",
+        "--knowledge-pack",
+        help="Knowledge pack JSONL path",
+    ),
+    out: str = typer.Option("data/forge_benchmark_fixture", "--out", help="Output benchmark directory"),
+    max_minutes: int = typer.Option(5, "--max-minutes", help="Wall-clock time guardrail for the benchmark"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
+) -> None:
+    """Preferred grouped alias for `cam forge-benchmark`."""
+    forge_benchmark(
+        repo=repo,
+        note=note,
+        knowledge_pack=knowledge_pack,
+        out=out,
+        max_minutes=max_minutes,
+        verbose=verbose,
+    )
+
+
+@doctor_app.command(name="keycheck")
+def doctor_keycheck(
+    for_command: str = typer.Option("mine", "--for", help="Command to preflight: mine, ideate"),
+    live: bool = typer.Option(False, "--live", help="Also validate the keys with a tiny real provider call"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam keycheck`."""
+    keycheck(for_command=for_command, live=live, config=config)
+
+
+@doctor_app.command(name="status")
+def doctor_status(
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Preferred grouped alias for `cam status`."""
+    status(config=config)
+
+
+@app.command(name="prism-demo", hidden=True)
 def prism_demo(
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Show detailed diagnostics"),
     config: Optional[str] = typer.Option(None, "--config", help="Path to claw.toml"),
@@ -4539,7 +5094,11 @@ kb_app = typer.Typer(
     help="Knowledge browser — explore assimilated capabilities, synergies, and domains",
     no_args_is_help=True,
 )
-app.add_typer(kb_app)
+app.add_typer(learn_app, name="learn")
+app.add_typer(task_app, name="task")
+app.add_typer(forge_app, name="forge")
+app.add_typer(doctor_app, name="doctor")
+app.add_typer(kb_app, name="kb")
 
 
 async def _kb_engine():

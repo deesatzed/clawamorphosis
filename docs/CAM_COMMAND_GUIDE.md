@@ -71,6 +71,36 @@ cam kb insights
 cam kb search "test generation"
 ```
 
+## Preferred UX Surface
+
+Use the flat top-level verbs for the main product workflows:
+
+- `cam evaluate`
+- `cam enhance`
+- `cam mine`
+- `cam ideate`
+- `cam create`
+- `cam validate`
+
+Use grouped commands for advanced or supporting workflows:
+
+- `cam doctor ...`
+  - preferred for preflight and diagnostics
+  - examples: `cam doctor keycheck --for mine --live`, `cam doctor status`
+- `cam learn ...`
+  - preferred for learning visibility and reassessment
+  - examples: `cam learn delta Repo2Eval`, `cam learn report`, `cam learn reassess --task "..."`
+- `cam task ...`
+  - preferred for explicit operator task management
+  - examples: `cam task add ...`, `cam task quickstart ...`, `cam task runbook <id>`, `cam task results`
+- `cam forge ...`
+  - preferred for the standalone Forge subsystem
+  - examples: `cam forge export ...`, `cam forge benchmark ...`
+- `cam kb ...`
+  - lower-level knowledge browser
+
+The older flat commands still work. The grouped paths are the preferred UX.
+
 ## Top-Level Commands
 
 ## `cam evaluate`
@@ -182,6 +212,12 @@ You want to inspect recent CAM executions after a session.
 cam results --limit 10
 ```
 
+Preferred grouped alias:
+
+```bash
+cam task results --limit 10
+```
+
 ## `cam status`
 
 Purpose:
@@ -227,6 +263,12 @@ You created a task and want to inspect its plan before execution.
 cam runbook task_abc123
 ```
 
+Preferred grouped alias:
+
+```bash
+cam task runbook task_abc123
+```
+
 ## `cam quickstart`
 
 Purpose:
@@ -249,6 +291,16 @@ You want a fast path to tell CAM, “fix this thing,” without manually buildin
 
 ```bash
 cam quickstart /Users/o2satz/projects/my-app \
+  --title "Repair failing tests" \
+  --description "Fix the broken auth tests and restore green CI" \
+  --check "pytest -q" \
+  --preview
+```
+
+Preferred grouped alias:
+
+```bash
+cam task quickstart /Users/o2satz/projects/my-app \
   --title "Repair failing tests" \
   --description "Fix the broken auth tests and restore green CI" \
   --check "pytest -q" \
@@ -312,6 +364,15 @@ You know exactly what CAM should investigate next and want that stored as a task
 
 ```bash
 cam add-goal /Users/o2satz/multiclaw \
+  --title "Evaluate finetuning path" \
+  --description "Design a practical small-model finetuning path for CAM where it is clearly worth the cost" \
+  --type architecture
+```
+
+Preferred grouped alias:
+
+```bash
+cam task add /Users/o2satz/multiclaw \
   --title "Evaluate finetuning path" \
   --description "Design a practical small-model finetuning path for CAM where it is clearly worth the cost" \
   --type architecture
@@ -478,6 +539,45 @@ You want to confirm `mine` will not fail on missing or invalid provider credenti
 cam keycheck --for mine --live
 ```
 
+Preferred grouped alias:
+
+```bash
+cam doctor keycheck --for mine --live
+```
+
+## `cam assimilation-delta`
+
+Purpose:
+Show what recent mine runs actually added, not just how mature the existing memory is.
+
+What it does:
+- reads the mining ledger for recently mined repos
+- resolves methodologies created by those mine runs
+- resolves action templates created by those mine runs
+- summarizes:
+  - new capabilities/domains
+  - possible new features or updates
+  - top new methodologies that are candidates for operationalization
+
+Syntax:
+
+```bash
+cam assimilation-delta [directory] [--depth N] [--since-hours 24] [--latest N]
+```
+
+Example use case:
+You want to know whether the last mine run added anything concrete or just noise.
+
+```bash
+cam assimilation-delta /Users/o2satz/multiclaw/Repo2Eval --depth 4 --since-hours 24 --latest 10
+```
+
+Preferred grouped alias:
+
+```bash
+cam learn delta /Users/o2satz/multiclaw/Repo2Eval --depth 4 --since-hours 24 --latest 10
+```
+
 ## `cam assimilation-report`
 
 Purpose:
@@ -518,6 +618,12 @@ You want to raise the bar for what counts as a future candidate.
 cam assimilation-report --limit 15 --future-threshold 0.75
 ```
 
+Preferred grouped alias:
+
+```bash
+cam learn report --limit 10
+```
+
 ## `cam reassess`
 
 Purpose:
@@ -556,6 +662,12 @@ You want repo context to influence what CAM revives.
 cam reassess /path/to/repo --task "add evaluation and rollback for finetuning pipeline" --limit 10
 ```
 
+Preferred grouped alias:
+
+```bash
+cam learn reassess /path/to/repo --task "add evaluation and rollback for finetuning pipeline" --limit 10
+```
+
 Example use case: support a new app build
 
 ```bash
@@ -591,6 +703,15 @@ cam forge-export \
   --max-tasks 200
 ```
 
+Preferred grouped alias:
+
+```bash
+cam forge export \
+  --out data/cam_knowledge_pack.jsonl \
+  --max-methodologies 200 \
+  --max-tasks 200
+```
+
 ## `cam forge-benchmark`
 
 Purpose:
@@ -612,6 +733,12 @@ You changed the standalone Forge flow and want a fixed regression check.
 
 ```bash
 cam forge-benchmark --max-minutes 5
+```
+
+Preferred grouped alias:
+
+```bash
+cam forge benchmark --max-minutes 5
 ```
 
 ## `cam validate`

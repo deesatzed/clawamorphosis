@@ -186,7 +186,7 @@ Use this when you want CAM to tell you what it would change before it tries to c
 ### 2. Learn from outside repos
 
 ```bash
-.venv/bin/cam keycheck --for mine --live
+.venv/bin/cam doctor keycheck --for mine --live
 .venv/bin/cam mine /path/to/source-repos \
   --target /path/to/target-repo \
   --max-repos 2 \
@@ -211,19 +211,19 @@ To inspect the folder state before mining:
 To verify keys/providers before a live run without starting mining:
 
 ```bash
-.venv/bin/cam keycheck --for mine --live
+.venv/bin/cam doctor keycheck --for mine --live
 ```
 
 To inspect whether prior methodologies are just stored versus actually becoming useful:
 
 ```bash
-.venv/bin/cam assimilation-report --limit 10
+.venv/bin/cam learn report --limit 10
 ```
 
 To ask CAM which old methodologies should matter for a new task right now:
 
 ```bash
-.venv/bin/cam reassess --task "repair broken tests with ast-based refactoring" --limit 10
+.venv/bin/cam learn reassess --task "repair broken tests with ast-based refactoring" --limit 10
 ```
 
 ### 3. Invent new app ideas from CAM memory plus repo inputs
@@ -368,20 +368,24 @@ That is the core build.
 | `cam setup` | Configure agent keys, models, budgets, and defaults |
 | `cam evaluate <repo>` | Inspect one repository and produce findings |
 | `cam enhance <repo>` | Run the full improve-and-verify loop on one repository |
-| `cam keycheck` | Preflight required API keys, optionally with tiny real provider calls |
 | `cam mine <dir>` | Learn from repositories in a directory |
-| `cam mine-report <dir>` | Show which repos are new, changed, or unchanged in the mining ledger |
-| `cam assimilation-report` | Show the learning continuum from stored knowledge to proven usefulness |
-| `cam reassess` | Re-score prior methodologies against a new task and explain why they matter now |
 | `cam ideate <dir>` | Generate novel standalone app concepts from CAM memory plus repo inputs |
 | `cam create <repo>` | Create, augment, or fix a repository from a task request |
 | `cam validate` | Check the created result against its saved spec |
 | `cam benchmark` | Measure output quality after validation |
-| `cam forge-export` | Export CAM knowledge into a neutral knowledge pack |
-| `cam forge-benchmark` | Run the standalone Forge regression benchmark |
-| `cam results` | Inspect past task outcomes |
 | `cam status` | Inspect system and budget status |
-| `cam kb ...` | Search and inspect what CAM has learned |
+
+## Advanced Command Groups
+
+These are the preferred expert paths. The older flat commands still work as compatibility aliases.
+
+| Group | Use it for | Examples |
+| --- | --- | --- |
+| `cam doctor ...` | Preflight and diagnostics | `cam doctor keycheck --for mine --live`, `cam doctor status` |
+| `cam learn ...` | Assimilation visibility and reassessment | `cam learn delta Repo2Eval`, `cam learn report`, `cam learn reassess --task "..."` |
+| `cam task ...` | Manual task setup and inspection | `cam task add ...`, `cam task quickstart ...`, `cam task runbook <id>`, `cam task results` |
+| `cam forge ...` | Standalone Forge export/benchmark work | `cam forge export ...`, `cam forge benchmark ...` |
+| `cam kb ...` | Low-level knowledge browsing | `cam kb insights`, `cam kb search "repo repair"` |
 
 ## Documentation Map
 

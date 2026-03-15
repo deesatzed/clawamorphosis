@@ -16,6 +16,21 @@ def _command_map():
     return mapping
 
 
+def _group_map():
+    from claw.cli import app
+
+    mapping = {}
+    for group in getattr(app, "registered_groups", []):
+        info = group.typer_instance.info
+        name = group.name
+        if hasattr(name, "value"):
+            name = name.value
+        if not name:
+            name = info.name
+        mapping[name] = group.typer_instance
+    return mapping
+
+
 class TestCLIUXSurface:
     def test_cli_root_dir_points_to_repo(self):
         from claw.cli import ROOT_DIR
@@ -47,6 +62,10 @@ class TestCLIUXSurface:
         commands = _command_map()
         assert "assimilation-report" in commands
 
+    def test_assimilation_delta_command_registered(self):
+        commands = _command_map()
+        assert "assimilation-delta" in commands
+
     def test_reassess_command_registered(self):
         commands = _command_map()
         assert "reassess" in commands
@@ -54,6 +73,41 @@ class TestCLIUXSurface:
     def test_keycheck_command_registered(self):
         commands = _command_map()
         assert "keycheck" in commands
+
+    def test_grouped_workflow_namespaces_registered(self):
+        groups = _group_map()
+        assert "learn" in groups
+        assert "task" in groups
+        assert "forge" in groups
+        assert "doctor" in groups
+        assert "kb" in groups
+
+    def test_grouped_namespace_commands_exist(self):
+        groups = _group_map()
+
+        learn_names = {
+            cmd.name or (cmd.callback.__name__ if cmd.callback else "")
+            for cmd in groups["learn"].registered_commands
+        }
+        assert {"report", "delta", "reassess", "synergies"} <= learn_names
+
+        task_names = {
+            cmd.name or (cmd.callback.__name__ if cmd.callback else "")
+            for cmd in groups["task"].registered_commands
+        }
+        assert {"add", "quickstart", "runbook", "results"} <= task_names
+
+        forge_names = {
+            cmd.name or (cmd.callback.__name__ if cmd.callback else "")
+            for cmd in groups["forge"].registered_commands
+        }
+        assert {"export", "benchmark"} <= forge_names
+
+        doctor_names = {
+            cmd.name or (cmd.callback.__name__ if cmd.callback else "")
+            for cmd in groups["doctor"].registered_commands
+        }
+        assert {"keycheck", "status"} <= doctor_names
 
     def test_benchmark_command_registered(self):
         commands = _command_map()

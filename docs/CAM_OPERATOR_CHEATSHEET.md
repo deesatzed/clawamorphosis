@@ -15,6 +15,14 @@ pip install -e ".[dev]"
 .venv/bin/cam govern stats
 ```
 
+Preferred mental split:
+- core workflow verbs stay top-level: `evaluate`, `enhance`, `mine`, `ideate`, `create`, `validate`
+- advanced workflow support is grouped:
+  - `cam doctor ...`
+  - `cam learn ...`
+  - `cam task ...`
+  - `cam forge ...`
+
 ## 1. Check That CAM Is Healthy
 
 ```bash
@@ -60,7 +68,7 @@ Inspect the folder first:
 Preflight the real provider path first:
 
 ```bash
-.venv/bin/cam keycheck --for mine --live
+.venv/bin/cam doctor keycheck --for mine --live
 ```
 
 Real mining:
@@ -139,7 +147,7 @@ Use this when:
 ## 8. Export CAM Knowledge For A Standalone App
 
 ```bash
-.venv/bin/cam forge-export \
+.venv/bin/cam forge export \
   --out data/cam_knowledge_pack.jsonl \
   --max-methodologies 200 \
   --max-tasks 200 \
@@ -157,8 +165,9 @@ Use this when:
 .venv/bin/cam kb search "repo repair"
 .venv/bin/cam kb domains
 .venv/bin/cam kb synergies --limit 15
-.venv/bin/cam assimilation-report --limit 10
-.venv/bin/cam reassess --task "repair broken tests with ast-based refactoring" --limit 10
+.venv/bin/cam learn report --limit 10
+.venv/bin/cam learn delta /path/to/repo-folder --since-hours 24 --latest 10
+.venv/bin/cam learn reassess --task "repair broken tests with ast-based refactoring" --limit 10
 ```
 
 Use this when:
@@ -170,7 +179,7 @@ Use this when:
 ### Improve CAM using outside repos
 
 ```bash
-.venv/bin/cam keycheck --for mine --live
+.venv/bin/cam doctor keycheck --for mine --live
 .venv/bin/cam mine /path/to/repo-folder --target /Users/o2satz/multiclaw --max-repos 4 --max-minutes 20
 .venv/bin/cam kb insights
 ```
@@ -178,7 +187,7 @@ Use this when:
 ### Build a new standalone app using outside repos
 
 ```bash
-.venv/bin/cam keycheck --for mine --live
+.venv/bin/cam doctor keycheck --for mine --live
 .venv/bin/cam mine /path/to/repo-folder --target /path/to/new-app --max-repos 4 --max-minutes 20
 .venv/bin/cam ideate /path/to/repo-folder --ideas 3 --max-repos 4
 .venv/bin/cam create /path/to/new-app --repo-mode new --request "Build the selected concept"
@@ -198,5 +207,5 @@ Use this when:
 - `ideate` proposes app concepts.
 - `create` turns a requested outcome into a spec and task.
 - `validate` should happen before `benchmark`.
-- `forge-export` is the clean handoff from CAM into a standalone app.
+- `cam forge export` is the clean handoff from CAM into a standalone app.
 - if CAM claims success but validation says the repo did not change, trust validation.

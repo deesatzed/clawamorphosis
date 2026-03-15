@@ -20,7 +20,7 @@ Use this when the main question is simple:
 If **yes**, start with:
 
 ```bash
-cam keycheck --for mine --live
+cam doctor keycheck --for mine --live
 cam mine /path/to/repo-folder --target /path/to/target --max-repos 10 --depth 4 --max-minutes 30
 ```
 
@@ -38,10 +38,10 @@ Then decide what the real target is:
 If **yes**, use:
 
 ```bash
-cam keycheck --for mine --live
+cam doctor keycheck --for mine --live
 cam mine /path/to/repo-folder --target /Users/o2satz/multiclaw --max-repos 10 --depth 4 --max-minutes 30
-cam assimilation-report --limit 10
-cam reassess --task "your next CAM improvement task" --limit 10
+cam learn report --limit 10
+cam learn reassess --task "your next CAM improvement task" --limit 10
 ```
 
 If you want CAM to actually change its own code after learning:
@@ -80,7 +80,7 @@ Use this when you want to:
 If you want outside-repo learning first:
 
 ```bash
-cam keycheck --for mine --live
+cam doctor keycheck --for mine --live
 cam mine /path/to/repo-folder --target /path/to/existing-repo --max-repos 10 --depth 4 --max-minutes 30
 cam evaluate /path/to/existing-repo --mode quick
 cam enhance /path/to/existing-repo --dry-run
@@ -91,9 +91,9 @@ cam enhance /path/to/existing-repo --dry-run
 If **yes**, use:
 
 ```bash
-cam keycheck --for mine --live
+cam doctor keycheck --for mine --live
 cam mine /path/to/repo-folder --target /path/to/new-app --max-repos 10 --depth 4 --max-minutes 30
-cam keycheck --for ideate --live
+cam doctor keycheck --for ideate --live
 cam ideate /path/to/repo-folder --ideas 3 --max-repos 4
 cam create /path/to/new-app --repo-mode new --request "Build the selected concept" --max-minutes 20
 cam validate --spec-file data/create_specs/<spec-file>.json --max-minutes 5
@@ -109,9 +109,9 @@ Use this when you want CAM to:
 ### Improve CAM itself
 
 ```bash
-cam keycheck --for mine --live
+cam doctor keycheck --for mine --live
 cam mine Repo2Eval --target /Users/o2satz/multiclaw --max-repos 20 --depth 4 --max-minutes 30
-cam assimilation-report --limit 10
+cam learn report --limit 10
 ```
 
 ### Improve another repo
@@ -125,9 +125,9 @@ cam enhance /path/to/repo --max-tasks 5
 ### Build a new standalone app
 
 ```bash
-cam keycheck --for mine --live
+cam doctor keycheck --for mine --live
 cam mine Repo2Eval --target /path/to/new-app --max-repos 10 --depth 4 --max-minutes 30
-cam keycheck --for ideate --live
+cam doctor keycheck --for ideate --live
 cam ideate Repo2Eval --ideas 3 --max-repos 4
 cam create /path/to/new-app --repo-mode new --request "Build the selected concept" --max-minutes 20
 cam validate --spec-file data/create_specs/<spec-file>.json --max-minutes 5
@@ -138,3 +138,4 @@ cam validate --spec-file data/create_specs/<spec-file>.json --max-minutes 5
 - If the target already exists: start with `evaluate`
 - If the target does not exist yet: start with `mine` + `ideate` + `create`
 - If the target is CAM itself: `mine` into CAM first, then `enhance` CAM if you want code changes
+- Use `cam doctor ...`, `cam learn ...`, `cam task ...`, and `cam forge ...` as the preferred advanced grouped paths
