@@ -150,6 +150,7 @@ Use this when:
 .venv/bin/cam kb search "repo repair"
 .venv/bin/cam kb domains
 .venv/bin/cam kb synergies --limit 15
+.venv/bin/cam assimilation-report --limit 10
 ```
 
 Use this when:

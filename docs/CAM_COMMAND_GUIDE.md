@@ -441,6 +441,46 @@ Example use case: only show the repos that would justify fresh work
 cam mine-report /Users/o2satz/multiclaw/Repo2Eval --depth 3 --changed-only
 ```
 
+## `cam assimilation-report`
+
+Purpose:
+Show whether CAM’s assimilated knowledge is merely stored, actively reused, operationalized, or proven useful.
+
+What it does:
+- classifies methodologies into continuum stages:
+  - `stored`
+  - `enriched`
+  - `retrieved`
+  - `operationalized`
+  - `proven`
+- separately flags high-potential methodologies that may become useful later
+- uses existing metadata like:
+  - retrieval counts
+  - success counts
+  - capability metadata
+  - potential score
+  - linked action templates
+
+Syntax:
+
+```bash
+cam assimilation-report [--limit N] [--future-threshold 0.65]
+```
+
+Example use case:
+You want to know whether CAM’s mined knowledge is real operational fuel or just archived memory.
+
+```bash
+cam assimilation-report --limit 10
+```
+
+Example use case:
+You want to raise the bar for what counts as a future candidate.
+
+```bash
+cam assimilation-report --limit 15 --future-threshold 0.75
+```
+
 Example use case: support a new app build
 
 ```bash

@@ -519,6 +519,29 @@ class Repository:
         )
         return [_row_to_methodology(r) for r in rows]
 
+    async def list_methodologies(
+        self,
+        limit: int = 2000,
+        include_dead: bool = False,
+    ) -> list[Methodology]:
+        """List methodologies for reporting/analysis."""
+        if include_dead:
+            rows = await self.engine.fetch_all(
+                """SELECT * FROM methodologies
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                [limit],
+            )
+        else:
+            rows = await self.engine.fetch_all(
+                """SELECT * FROM methodologies
+                   WHERE lifecycle_state != 'dead'
+                   ORDER BY created_at DESC
+                   LIMIT ?""",
+                [limit],
+            )
+        return [_row_to_methodology(r) for r in rows]
+
     async def update_methodology_retrieval(self, methodology_id: str) -> None:
         now = datetime.now(UTC).isoformat()
         await self.engine.execute(

@@ -225,6 +225,47 @@ def _summarize_methodology(meth: Any) -> dict[str, Any]:
     }
 
 
+def _classify_assimilation_stage(
+    meth: Any,
+    *,
+    template_count: int = 0,
+    template_successes: int = 0,
+) -> str:
+    """Classify a methodology along the learning/usefulness continuum."""
+    if getattr(meth, "success_count", 0) > 0 or template_successes > 0:
+        return "proven"
+    if template_count > 0:
+        return "operationalized"
+    if getattr(meth, "retrieval_count", 0) > 0:
+        return "retrieved"
+    if (
+        getattr(meth, "capability_data", None) is not None
+        or getattr(meth, "novelty_score", None) is not None
+        or getattr(meth, "potential_score", None) is not None
+    ):
+        return "enriched"
+    return "stored"
+
+
+def _is_future_candidate(
+    meth: Any,
+    *,
+    potential_threshold: float,
+    template_count: int = 0,
+) -> bool:
+    """Estimate whether a methodology looks promising for future use."""
+    if getattr(meth, "success_count", 0) > 0:
+        return False
+    potential = getattr(meth, "potential_score", None)
+    if potential is not None and potential >= potential_threshold:
+        return True
+    capability_data = getattr(meth, "capability_data", None) or {}
+    domains = capability_data.get("domain", []) if isinstance(capability_data, dict) else []
+    if capability_data and domains and template_count > 0:
+        return True
+    return False
+
+
 def _build_ideation_prompt(
     focus: str,
     repo_contexts: list[dict[str, Any]],
@@ -3591,6 +3632,175 @@ def synergies(
     """Show capability synergy graph summary, exploration stats, and recent discoveries."""
     _setup_logging(verbose)
     asyncio.run(_synergies_async(verbose))
+
+
+@app.command(name="assimilation-report")
+def assimilation_report(
+    limit: int = typer.Option(10, "--limit", "-n", help="Rows to show per section"),
+    future_threshold: float = typer.Option(0.65, "--future-threshold", help="Potential score threshold for future-candidate flag"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Show the learning continuum from stored methodologies to proven usefulness."""
+    _setup_logging(False)
+    asyncio.run(_assimilation_report_async(limit, future_threshold))
+
+
+async def _assimilation_report_async(limit: int, future_threshold: float) -> None:
+    from rich.panel import Panel
+
+    engine, repository = await _kb_engine()
+
+    try:
+        methods = await repository.list_methodologies(limit=5000, include_dead=False)
+        if not methods:
+            console.print("[yellow]No methodologies in knowledge base. Run 'cam mine <dir>' first.[/yellow]")
+            return
+
+        template_rows = await repository.engine.fetch_all(
+            """SELECT source_methodology_id,
+                      COUNT(*) as template_count,
+                      COALESCE(SUM(success_count), 0) as template_successes,
+                      COALESCE(SUM(failure_count), 0) as template_failures,
+                      MAX(confidence) as max_confidence
+               FROM action_templates
+               WHERE source_methodology_id IS NOT NULL
+               GROUP BY source_methodology_id"""
+        )
+        template_stats = {
+            row["source_methodology_id"]: {
+                "count": int(row["template_count"] or 0),
+                "successes": int(row["template_successes"] or 0),
+                "failures": int(row["template_failures"] or 0),
+                "max_confidence": float(row["max_confidence"] or 0.0),
+            }
+            for row in template_rows
+            if row.get("source_methodology_id")
+        }
+
+        stage_counts = {
+            "stored": 0,
+            "enriched": 0,
+            "retrieved": 0,
+            "operationalized": 0,
+            "proven": 0,
+        }
+        future_candidates: list[Any] = []
+        proven_items: list[Any] = []
+        stored_items: list[Any] = []
+        enriched_items: list[Any] = []
+        operationalized_items: list[Any] = []
+
+        for meth in methods:
+            stats = template_stats.get(meth.id, {})
+            template_count = int(stats.get("count", 0))
+            template_successes = int(stats.get("successes", 0))
+            stage = _classify_assimilation_stage(
+                meth,
+                template_count=template_count,
+                template_successes=template_successes,
+            )
+            stage_counts[stage] += 1
+
+            if _is_future_candidate(
+                meth,
+                potential_threshold=future_threshold,
+                template_count=template_count,
+            ):
+                future_candidates.append((meth, template_count, template_successes))
+
+            if stage == "proven":
+                proven_items.append((meth, template_count, template_successes))
+            elif stage == "stored":
+                stored_items.append((meth, template_count, template_successes))
+            elif stage == "enriched":
+                enriched_items.append((meth, template_count, template_successes))
+            elif stage == "operationalized":
+                operationalized_items.append((meth, template_count, template_successes))
+
+        future_candidates.sort(key=lambda x: ((x[0].potential_score or 0), (x[0].novelty_score or 0)), reverse=True)
+        proven_items.sort(key=lambda x: (x[0].success_count + x[2], x[0].retrieval_count), reverse=True)
+        stored_items.sort(key=lambda x: x[0].created_at, reverse=True)
+        enriched_items.sort(key=lambda x: ((x[0].potential_score or 0), (x[0].novelty_score or 0)), reverse=True)
+        operationalized_items.sort(key=lambda x: (x[1], x[0].retrieval_count), reverse=True)
+
+        console.print(Panel.fit(
+            f"[bold cyan]CAM Assimilation Continuum[/bold cyan]\n"
+            f"[bold]{len(methods):,}[/bold] active methodologies tracked across the learning continuum",
+            border_style="cyan",
+        ))
+
+        summary = Table(title="Continuum Stages")
+        summary.add_column("Stage", style="bold", width=18)
+        summary.add_column("Count", justify="right", width=8)
+        summary.add_column("Meaning", max_width=52)
+        summary.add_row("stored", str(stage_counts["stored"]), "Filed in memory, not yet enriched or retrieved")
+        summary.add_row("enriched", str(stage_counts["enriched"]), "Structured metadata exists, but not yet in active use")
+        summary.add_row("retrieved", str(stage_counts["retrieved"]), "CAM is pulling it back during later work")
+        summary.add_row("operationalized", str(stage_counts["operationalized"]), "Turned into executable action template(s)")
+        summary.add_row("proven", str(stage_counts["proven"]), "Has actual success signal from use")
+        console.print(summary)
+
+        console.print(
+            f"\n[bold]Future candidates:[/bold] {len(future_candidates)} "
+            f"[dim](potential >= {future_threshold:.2f}, no direct success yet)[/dim]"
+        )
+
+        if future_candidates:
+            future_table = Table(title=f"Top Future Candidates ({min(limit, len(future_candidates))})")
+            future_table.add_column("ID", width=8)
+            future_table.add_column("Description", max_width=44)
+            future_table.add_column("Potential", justify="right", width=9, style="bold cyan")
+            future_table.add_column("Novelty", justify="right", width=8, style="yellow")
+            future_table.add_column("Domains", max_width=24)
+            for meth, template_count, _ in future_candidates[:limit]:
+                domains = ", ".join(((meth.capability_data or {}).get("domain", [])[:3]))
+                future_table.add_row(
+                    meth.id[:8],
+                    meth.problem_description[:44],
+                    f"{(meth.potential_score or 0):.3f}",
+                    f"{(meth.novelty_score or 0):.3f}" if meth.novelty_score is not None else "-",
+                    domains or ("templates:" + str(template_count) if template_count else "-"),
+                )
+            console.print(future_table)
+
+        def _print_stage_table(title: str, items: list[Any], *, score_label: str = "") -> None:
+            if not items:
+                return
+            table = Table(title=title)
+            table.add_column("ID", width=8)
+            table.add_column("Description", max_width=44)
+            table.add_column("Retr", justify="right", width=6)
+            table.add_column("Succ", justify="right", width=6)
+            table.add_column("Tpl", justify="right", width=5)
+            if score_label:
+                table.add_column(score_label, justify="right", width=9)
+            for meth, template_count, template_successes in items[:limit]:
+                row = [
+                    meth.id[:8],
+                    meth.problem_description[:44],
+                    str(meth.retrieval_count),
+                    str(meth.success_count + template_successes),
+                    str(template_count),
+                ]
+                if score_label == "Potential":
+                    row.append(f"{(meth.potential_score or 0):.3f}")
+                elif score_label == "Novelty":
+                    row.append(f"{(meth.novelty_score or 0):.3f}")
+                table.add_row(*row)
+            console.print(table)
+
+        _print_stage_table("Proven Use", proven_items, score_label="Potential")
+        _print_stage_table("Operationalized But Not Proven", operationalized_items, score_label="Potential")
+        _print_stage_table("Enriched But Not Yet Used", enriched_items, score_label="Potential")
+        _print_stage_table("Stored Only", stored_items)
+
+        console.print(
+            "\n[dim]Interpretation: stored -> enriched -> retrieved -> operationalized -> proven. "
+            "Future-candidate is an orthogonal flag for capabilities CAM should keep reconsidering.[/dim]"
+        )
+
+    finally:
+        await engine.close()
 
 
 async def _synergies_async(verbose: bool) -> None:

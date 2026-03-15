@@ -33,6 +33,7 @@ Today CAM can:
 - avoid re-spending tokens on unchanged repos that CAM already mined
 - report which repos are new, changed, or unchanged before you rescan them
 - search and inspect what CAM has already learned
+- report where a methodology sits on the learning continuum: stored, enriched, retrieved, operationalized, or proven
 - ideate novel app concepts using both stored CAM knowledge and candidate repos
 - create a spec-backed task for a fixed repo, augmented repo, or new repo
 - validate whether a created repo actually changed and whether executable checks passed
@@ -204,6 +205,12 @@ To inspect the folder state before mining:
 .venv/bin/cam mine-report /path/to/source-repos --depth 2
 ```
 
+To inspect whether prior methodologies are just stored versus actually becoming useful:
+
+```bash
+.venv/bin/cam assimilation-report --limit 10
+```
+
 ### 3. Invent new app ideas from CAM memory plus repo inputs
 
 ```bash
@@ -348,6 +355,7 @@ That is the core build.
 | `cam enhance <repo>` | Run the full improve-and-verify loop on one repository |
 | `cam mine <dir>` | Learn from repositories in a directory |
 | `cam mine-report <dir>` | Show which repos are new, changed, or unchanged in the mining ledger |
+| `cam assimilation-report` | Show the learning continuum from stored knowledge to proven usefulness |
 | `cam ideate <dir>` | Generate novel standalone app concepts from CAM memory plus repo inputs |
 | `cam create <repo>` | Create, augment, or fix a repository from a task request |
 | `cam validate` | Check the created result against its saved spec |
