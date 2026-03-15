@@ -151,6 +151,7 @@ Use this when:
 .venv/bin/cam kb domains
 .venv/bin/cam kb synergies --limit 15
 .venv/bin/cam assimilation-report --limit 10
+.venv/bin/cam reassess --task "repair broken tests with ast-based refactoring" --limit 10
 ```
 
 Use this when:

@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -264,6 +265,131 @@ def _is_future_candidate(
     if capability_data and domains and template_count > 0:
         return True
     return False
+
+
+_TRIGGER_KEYWORDS: dict[str, set[str]] = {
+    "frontend": {"frontend", "ui", "ux", "react", "component", "design"},
+    "backend": {"backend", "api", "server", "service", "endpoint"},
+    "finetuning": {"finetune", "fine-tuning", "training", "adapter", "lora", "sft"},
+    "evaluation": {"eval", "evaluation", "benchmark", "grade", "metrics", "score"},
+    "validation": {"validate", "validation", "check", "verify", "assert"},
+    "repo_repair": {"repair", "fix", "debug", "failing", "broken", "regression"},
+    "testing": {"test", "pytest", "unit", "integration", "coverage"},
+    "data_pipeline": {"dataset", "jsonl", "ingest", "embedding", "pipeline", "packing"},
+    "security": {"security", "privacy", "secret", "auth", "permission"},
+    "deployment": {"deploy", "deployment", "release", "packaging", "ops", "ci", "cd"},
+}
+
+_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "into", "using", "use",
+    "build", "create", "make", "repo", "project", "task", "app", "tool", "system",
+    "your", "their", "there", "will", "have", "has", "was", "are", "its", "not",
+}
+
+
+def _tokenize_reassessment_text(text: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9_+-]{3,}", text.lower()))
+    return {t for t in tokens if t not in _STOPWORDS}
+
+
+def _derive_activation_triggers(meth: Any, *, template_count: int = 0) -> list[str]:
+    """Derive lightweight trigger metadata from existing methodology fields."""
+    text_parts = [
+        getattr(meth, "problem_description", "") or "",
+        getattr(meth, "methodology_notes", "") or "",
+        " ".join(getattr(meth, "tags", []) or []),
+    ]
+    capability_data = getattr(meth, "capability_data", None) or {}
+    if isinstance(capability_data, dict):
+        text_parts.extend(capability_data.get("domain", []) or [])
+        ctype = capability_data.get("capability_type")
+        if ctype:
+            text_parts.append(str(ctype))
+        for io_key in ("inputs", "outputs"):
+            for item in capability_data.get(io_key, []) or []:
+                if isinstance(item, dict):
+                    if item.get("type"):
+                        text_parts.append(str(item["type"]))
+                    if item.get("name"):
+                        text_parts.append(str(item["name"]))
+
+    text = " ".join(text_parts).lower()
+    triggers: list[str] = []
+    for name, keywords in _TRIGGER_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            triggers.append(name)
+    if template_count > 0:
+        triggers.append("has_action_template")
+    if getattr(meth, "potential_score", None) is not None and (meth.potential_score or 0) >= 0.75:
+        triggers.append("high_future_value")
+    return sorted(set(triggers))
+
+
+def _score_methodology_for_task(
+    meth: Any,
+    *,
+    task_tokens: set[str],
+    repo_tokens: set[str],
+    template_count: int = 0,
+    template_successes: int = 0,
+) -> tuple[float, list[str], list[str]]:
+    """Heuristic task-conditioned reassessment score and explanation."""
+    tags = set(getattr(meth, "tags", []) or [])
+    capability_data = getattr(meth, "capability_data", None) or {}
+    domains = set(capability_data.get("domain", []) if isinstance(capability_data, dict) else [])
+    triggers = _derive_activation_triggers(meth, template_count=template_count)
+    trigger_set = set(triggers)
+
+    text_tokens = _tokenize_reassessment_text(
+        " ".join([
+            getattr(meth, "problem_description", "") or "",
+            getattr(meth, "methodology_notes", "") or "",
+            " ".join(tags),
+            " ".join(domains),
+            " ".join(triggers),
+        ])
+    )
+
+    overlap_tokens = sorted((task_tokens | repo_tokens) & text_tokens)
+    score = 0.0
+    reasons: list[str] = []
+
+    if overlap_tokens:
+        overlap_score = min(0.45, 0.06 * len(overlap_tokens))
+        score += overlap_score
+        reasons.append("task/repo overlap: " + ", ".join(overlap_tokens[:5]))
+
+    potential = getattr(meth, "potential_score", None)
+    if potential is not None:
+        score += min(0.2, potential * 0.2)
+        if potential >= 0.65:
+            reasons.append(f"high potential {potential:.2f}")
+
+    novelty = getattr(meth, "novelty_score", None)
+    if novelty is not None and novelty >= 0.45:
+        score += min(0.08, novelty * 0.08)
+        reasons.append(f"novelty {novelty:.2f}")
+
+    retrieval_count = getattr(meth, "retrieval_count", 0) or 0
+    if retrieval_count > 0:
+        score += min(0.1, 0.02 * retrieval_count)
+        reasons.append(f"retrieved {retrieval_count}x")
+
+    direct_success = getattr(meth, "success_count", 0) or 0
+    if direct_success > 0 or template_successes > 0:
+        combined_success = direct_success + template_successes
+        score += min(0.18, 0.05 * combined_success)
+        reasons.append(f"success evidence {combined_success}")
+
+    if template_count > 0:
+        score += min(0.12, 0.04 * template_count)
+        reasons.append(f"{template_count} action template(s)")
+
+    if trigger_set & task_tokens:
+        score += 0.08
+        reasons.append("activation trigger matched task")
+
+    return score, reasons, triggers
 
 
 def _build_ideation_prompt(
@@ -3645,6 +3771,20 @@ def assimilation_report(
     asyncio.run(_assimilation_report_async(limit, future_threshold))
 
 
+@app.command()
+def reassess(
+    repo: Optional[str] = typer.Argument(None, help="Optional repository path for additional context"),
+    task: str = typer.Option(..., "--task", "-t", help="Task or goal CAM should reassess prior knowledge against"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum recommendations to show"),
+    min_score: float = typer.Option(0.2, "--min-score", help="Minimum reassessment score to show"),
+    future_threshold: float = typer.Option(0.65, "--future-threshold", help="Potential score threshold for future-candidate flag"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Path to claw.toml"),
+) -> None:
+    """Re-score prior methodologies against a new task and explain why they matter now."""
+    _setup_logging(False)
+    asyncio.run(_reassess_async(repo, task, limit, min_score, future_threshold))
+
+
 async def _assimilation_report_async(limit: int, future_threshold: float) -> None:
     from rich.panel import Panel
 
@@ -3797,6 +3937,169 @@ async def _assimilation_report_async(limit: int, future_threshold: float) -> Non
         console.print(
             "\n[dim]Interpretation: stored -> enriched -> retrieved -> operationalized -> proven. "
             "Future-candidate is an orthogonal flag for capabilities CAM should keep reconsidering.[/dim]"
+        )
+
+    finally:
+        await engine.close()
+
+
+async def _reassess_async(
+    repo: Optional[str],
+    task: str,
+    limit: int,
+    min_score: float,
+    future_threshold: float,
+) -> None:
+    from rich.panel import Panel
+
+    repo_tokens: set[str] = set()
+    repo_summary: Optional[dict[str, Any]] = None
+    if repo:
+        repo_path = Path(repo).resolve()
+        if not repo_path.exists():
+            console.print(f"[red]Repository path does not exist: {repo_path}[/red]")
+            raise typer.Exit(1)
+        repo_summary = _summarize_repo_tree(repo_path)
+        repo_tokens = _tokenize_reassessment_text(
+            " ".join(
+                repo_summary.get("marker_files", [])
+                + repo_summary.get("top_dirs", [])
+                + repo_summary.get("sample_files", [])
+            )
+        )
+
+    task_tokens = _tokenize_reassessment_text(task)
+    if not task_tokens and not repo_tokens:
+        console.print("[red]Task is too vague for reassessment. Provide a more specific --task.[/red]")
+        raise typer.Exit(1)
+
+    engine, repository = await _kb_engine()
+
+    try:
+        methods = await repository.list_methodologies(limit=5000, include_dead=False)
+        if not methods:
+            console.print("[yellow]No methodologies in knowledge base. Run 'cam mine <dir>' first.[/yellow]")
+            return
+
+        template_rows = await repository.engine.fetch_all(
+            """SELECT source_methodology_id,
+                      COUNT(*) as template_count,
+                      COALESCE(SUM(success_count), 0) as template_successes
+               FROM action_templates
+               WHERE source_methodology_id IS NOT NULL
+               GROUP BY source_methodology_id"""
+        )
+        template_stats = {
+            row["source_methodology_id"]: {
+                "count": int(row["template_count"] or 0),
+                "successes": int(row["template_successes"] or 0),
+            }
+            for row in template_rows
+            if row.get("source_methodology_id")
+        }
+
+        recommendations: list[dict[str, Any]] = []
+        future_watchlist: list[dict[str, Any]] = []
+        for meth in methods:
+            stats = template_stats.get(meth.id, {})
+            template_count = int(stats.get("count", 0))
+            template_successes = int(stats.get("successes", 0))
+            score, reasons, triggers = _score_methodology_for_task(
+                meth,
+                task_tokens=task_tokens,
+                repo_tokens=repo_tokens,
+                template_count=template_count,
+                template_successes=template_successes,
+            )
+            stage = _classify_assimilation_stage(
+                meth,
+                template_count=template_count,
+                template_successes=template_successes,
+            )
+            payload = {
+                "methodology": meth,
+                "score": score,
+                "reasons": reasons,
+                "triggers": triggers,
+                "stage": stage,
+                "template_count": template_count,
+                "template_successes": template_successes,
+            }
+            if score >= min_score:
+                recommendations.append(payload)
+            elif _is_future_candidate(meth, potential_threshold=future_threshold, template_count=template_count):
+                future_watchlist.append(payload)
+
+        recommendations.sort(
+            key=lambda x: (
+                x["score"],
+                x["methodology"].success_count + x["template_successes"],
+                x["methodology"].retrieval_count,
+                x["methodology"].potential_score or 0,
+            ),
+            reverse=True,
+        )
+        future_watchlist.sort(
+            key=lambda x: (
+                x["methodology"].potential_score or 0,
+                x["methodology"].novelty_score or 0,
+            ),
+            reverse=True,
+        )
+
+        console.print(Panel.fit(
+            f"[bold cyan]CAM Reassess[/bold cyan]\n"
+            f"Task: {task}\n"
+            f"Repo context: {repo_summary['name'] if repo_summary else 'none'}",
+            border_style="cyan",
+        ))
+
+        if repo_summary:
+            console.print(
+                f"[dim]Repo markers:[/dim] {', '.join(repo_summary.get('marker_files', [])[:6]) or '-'}"
+            )
+
+        if recommendations:
+            table = Table(title=f"Recommended Now ({min(limit, len(recommendations))})")
+            table.add_column("ID", width=8)
+            table.add_column("Stage", width=16)
+            table.add_column("Score", justify="right", width=7, style="bold green")
+            table.add_column("Description", max_width=36)
+            table.add_column("Why Now", max_width=36)
+            table.add_column("Triggers", max_width=22)
+            for item in recommendations[:limit]:
+                meth = item["methodology"]
+                table.add_row(
+                    meth.id[:8],
+                    item["stage"],
+                    f"{item['score']:.2f}",
+                    meth.problem_description[:36],
+                    "; ".join(item["reasons"][:2])[:36],
+                    ", ".join(item["triggers"][:3])[:22] or "-",
+                )
+            console.print(table)
+        else:
+            console.print("[yellow]No methodologies cleared the reassessment score threshold.[/yellow]")
+
+        if future_watchlist:
+            watch = Table(title=f"Future Watchlist ({min(limit, len(future_watchlist))})")
+            watch.add_column("ID", width=8)
+            watch.add_column("Potential", justify="right", width=9, style="bold cyan")
+            watch.add_column("Description", max_width=40)
+            watch.add_column("Triggers", max_width=24)
+            for item in future_watchlist[:limit]:
+                meth = item["methodology"]
+                watch.add_row(
+                    meth.id[:8],
+                    f"{(meth.potential_score or 0):.3f}",
+                    meth.problem_description[:40],
+                    ", ".join(item["triggers"][:4])[:24] or "-",
+                )
+            console.print(watch)
+
+        console.print(
+            "\n[dim]Use this command when a new task arrives and you want CAM to reactivate prior knowledge "
+            "based on current fit, not just historical storage.[/dim]"
         )
 
     finally:

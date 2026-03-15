@@ -481,6 +481,44 @@ You want to raise the bar for what counts as a future candidate.
 cam assimilation-report --limit 15 --future-threshold 0.75
 ```
 
+## `cam reassess`
+
+Purpose:
+Actively re-score old methodologies against a new task so CAM can decide what prior knowledge should be revived now.
+
+What it does:
+- takes a task description and optional repo context
+- derives activation triggers from prior methodologies
+- scores methodologies against the new task using:
+  - task/repo keyword overlap
+  - potential score
+  - novelty
+  - retrieval evidence
+  - success evidence
+  - action-template presence
+- separates “recommended now” from “future watchlist”
+- explains why each recommendation was surfaced
+
+Syntax:
+
+```bash
+cam reassess [repo] --task "..." [--limit N] [--min-score 0.2] [--future-threshold 0.65]
+```
+
+Example use case:
+You want CAM to reactivate prior knowledge for a repo repair task instead of just showing stored memory.
+
+```bash
+cam reassess --task "repair broken tests with ast-based refactoring" --limit 10
+```
+
+Example use case:
+You want repo context to influence what CAM revives.
+
+```bash
+cam reassess /path/to/repo --task "add evaluation and rollback for finetuning pipeline" --limit 10
+```
+
 Example use case: support a new app build
 
 ```bash

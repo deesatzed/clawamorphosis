@@ -47,6 +47,10 @@ class TestCLIUXSurface:
         commands = _command_map()
         assert "assimilation-report" in commands
 
+    def test_reassess_command_registered(self):
+        commands = _command_map()
+        assert "reassess" in commands
+
     def test_benchmark_command_registered(self):
         commands = _command_map()
         assert "benchmark" in commands
