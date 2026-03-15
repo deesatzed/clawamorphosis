@@ -6,6 +6,8 @@ This guide documents the current `cam` CLI as implemented in the repository. For
 - the basic syntax
 - one concrete example use case
 
+For evidence-backed examples, tested claims, and real command transcripts, also see [CAM_PROVEN_CAPABILITIES.md](CAM_PROVEN_CAPABILITIES.md).
+
 ## Before You Start
 
 From the repo root:
