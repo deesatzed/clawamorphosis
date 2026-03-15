@@ -139,6 +139,10 @@ Export learned knowledge for a standalone app:
 | `cam results` | Inspect past task outcomes |
 | `cam status` | Inspect system and budget status |
 
+## Command Reference
+
+For the full command-by-command guide with syntax, behavior, and example use cases, see [docs/CAM_COMMAND_GUIDE.md](/Users/o2satz/multiclaw/docs/CAM_COMMAND_GUIDE.md).
+
 ## Notes
 
 - CAM uses minute-based wall-clock guardrails on mining, create, validate, and benchmark flows.
